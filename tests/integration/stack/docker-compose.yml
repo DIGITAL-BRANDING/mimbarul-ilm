@@ -1,0 +1,38 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: mimbarul
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: test-postgres-password
+    ports:
+      - "${TEST_DB_PORT:-55432}:5432"
+    volumes:
+      - ../sql/00_supabase_stub.sql:/docker-entrypoint-initdb.d/00_supabase_stub.sql:ro
+      - ../../../supabase/migrations/20260101000001_extensions_and_helpers.sql:/docker-entrypoint-initdb.d/01_extensions.sql:ro
+      - ../../../supabase/migrations/20260101000002_core_schema.sql:/docker-entrypoint-initdb.d/02_schema.sql:ro
+      - ../../../supabase/migrations/20260101000003_functions_and_triggers.sql:/docker-entrypoint-initdb.d/03_functions.sql:ro
+      - ../../../supabase/migrations/20260101000004_rls_and_grants.sql:/docker-entrypoint-initdb.d/04_rls.sql:ro
+      - ../../../supabase/migrations/20260101000005_storage.sql:/docker-entrypoint-initdb.d/05_storage.sql:ro
+      - ../../../supabase/migrations/20260101000006_search.sql:/docker-entrypoint-initdb.d/06_search.sql:ro
+      - ../../../supabase/migrations/20260101000007_quality_improvements.sql:/docker-entrypoint-initdb.d/07_quality.sql:ro
+      - ./seed.sql:/docker-entrypoint-initdb.d/08_seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mimbarul"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  rest:
+    image: postgrest/postgrest:v12.2.12
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://authenticator:test-authenticator-password@db:5432/mimbarul
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: test-stack-jwt-secret-at-least-32-bytes-long
+      PGRST_SERVER_PORT: 3000
+    ports:
+      - "${TEST_REST_PORT:-55433}:3000"
