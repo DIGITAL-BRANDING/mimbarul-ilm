@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens. Palette follows the brief: deep emerald, warm ivory, restrained gold.
+ * --color-gold is the text-safe gold (>= 4.5:1 on ivory); --color-gold-bright is for large
+ * decorative marks on the dark emerald only.
+ */
+@theme {
+  --color-deep: #0e3b30;
+  --color-deep-2: #0a2c24;
+  --color-moss: #1f5a4a;
+  --color-ivory: #fbf8f0;
+  --color-parchment: #f0e9d8;
+  --color-rule: #ddd3bb;
+  --color-gold: #84631a;
+  --color-gold-bright: #c9a24b;
+  --color-ink: #1b2420;
+  --color-mute: #4f5b54;
+  --color-danger: #9b2c2c;
+
+  --font-serif: "Noto Serif Variable", "Noto Serif", Georgia, serif;
+  --font-arabic: "Amiri", "Noto Naskh Arabic", "Traditional Arabic", serif;
+  --font-ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+html {
+  background: var(--color-ivory);
+  color: var(--color-ink);
+  font-family: var(--font-serif);
+  -webkit-text-size-adjust: 100%;
+  scroll-padding-top: 5rem;
+}
+
+/* Arabic locale uses the Arabic face for everything; Latin glyphs fall through to Noto Serif. */
+html[lang="ar"] {
+  font-family: var(--font-arabic), var(--font-serif);
+  line-height: 1.9;
+}
+/* Arabic fragments inside Hausa/English text */
+[lang="ar"]:not(html) {
+  font-family: var(--font-arabic), var(--font-serif);
+  line-height: 2;
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-gold-bright);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}
+
+@media print {
+  header, footer, nav, .no-print { display: none !important; }
+  html { background: #fff; }
+}
+
+.ui { font-family: var(--font-ui); }
