@@ -168,4 +168,40 @@ select t.ok((select role from public.profiles where id=:editor) = 'admin', 'admi
 select t.ok((select count(*) from public.audit_logs where action='profile.role_changed') = 1, 'role change is audit-logged');
 rollback;
 
+
+-- ================= 12. migration 0007 additions =================
+begin; set local role authenticated; select set_config('request.jwt.claim.sub', :admin, true);
+-- citation verification is stamped by the server-side trigger, not by the client
+insert into public.lesson_sources (id, lesson_id, source_id, hadith_number, reference_verified, verified_by)
+  values ('51000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000002','50000000-0000-0000-0000-000000000001','7', true, :editor);
+select t.ok((select verified_by from public.lesson_sources where id='51000000-0000-0000-0000-000000000001') = :admin::uuid, 'verified_by is set from the session user (client value ignored)');
+select t.ok((select verified_at is not null from public.lesson_sources where id='51000000-0000-0000-0000-000000000001'), 'verified_at is stamped');
+update public.lesson_sources set hadith_number='8' where id='51000000-0000-0000-0000-000000000001';
+select t.ok((select not reference_verified from public.lesson_sources where id='51000000-0000-0000-0000-000000000001'), 'changing the locator invalidates verification');
+update public.lesson_sources set editorial_notes='note only' where id='51000000-0000-0000-0000-000000000001';
+-- review status resets when text changes
+update public.lesson_translations set review_status='reviewed' where id='20000000-0000-0000-0000-000000000003';
+select t.ok((select review_status from public.lesson_translations where id='20000000-0000-0000-0000-000000000003')='reviewed', 'translation can be marked reviewed');
+update public.lesson_translations set title='Strength of Faith (edited)' where id='20000000-0000-0000-0000-000000000003';
+select t.ok((select review_status from public.lesson_translations where id='20000000-0000-0000-0000-000000000003')='unreviewed', 'editing text resets review status');
+-- contact workflow status
+rollback;
+begin; set local role authenticated; select set_config('request.jwt.claim.sub', :editor, true);
+update public.contact_messages set status='read';
+select t.ok((select count(*) from public.contact_messages where status='read') = 1, 'staff can mark a contact message read');
+do $$ begin update public.contact_messages set status='bogus'; raise exception 'SHOULD FAIL'; exception when check_violation then raise notice 'PASS: invalid contact status rejected'; end $$;
+rollback;
+-- categories: stable unique slug
+do $$ begin insert into public.categories (slug) values ('a'),('a'); raise exception 'SHOULD FAIL'; exception when unique_violation then raise notice 'PASS: category slug unique'; end $$;
+do $$ begin insert into public.categories (slug) values ('Bad Slug'); raise exception 'SHOULD FAIL'; exception when check_violation then raise notice 'PASS: category slug format enforced'; end $$;
+
+-- ================= 13. seed is idempotent and publicly readable =================
+\i supabase/seed.sql
+\i supabase/seed.sql
+select t.ok((select count(*) from public.categories where slug in ('quran-tafsir','hadith','aqeedah','tawheed','fiqh-worship','character','book-commentary','history','general')) = 9, 'seed creates the 9 starter categories exactly once');
+select t.ok((select count(*) from public.category_translations) = 27, 'seed creates 27 category translations (9 x 3 locales)');
+begin; set local role anon;
+select t.ok((select count(*) from public.category_translations where locale='ar') = 9, 'anon can read category names');
+rollback;
+
 \echo ALL INTEGRATION TESTS PASSED

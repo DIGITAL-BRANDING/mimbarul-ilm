@@ -8,8 +8,8 @@ Legend: DONE = implemented and verified as stated | PARTIAL | TODO
 | Project scaffold (Next 16.4, React 19, TS 5.9 strict, Tailwind 4, ESLint 9, Vitest, Playwright installed) | DONE | TypeScript 7 and ESLint 10 deliberately NOT used (ecosystem compatibility) |
 | Env validation (zod), `.env.example` | DONE | |
 | Supabase clients: browser, server (cookie), public (anon, cacheable), service (server-only) | DONE | |
-| DB schema (25 tables), migrations 0001-0006 | DONE | applied to PostgreSQL 16 |
-| RLS on every table + least-privilege grants | DONE | 65 SQL assertions pass |
+| DB schema (25 tables), migrations 0001-0007 | DONE | applied to PostgreSQL 16; 0007 also verified as an upgrade on existing data |
+| RLS on every table + least-privilege grants | DONE | 77 SQL assertions pass |
 | Triggers: status transitions, publish-rights, slug-change 301 redirects, revisions, audit log, role-escalation guard | DONE | |
 | Multilingual search (Hausa/Arabic/English folding) `search_lessons()` | DONE (DB) | no UI yet |
 | Storage buckets/policies (private + public) | WRITTEN, UNTESTED | needs a real Supabase project (no `storage` schema in test DB) |
@@ -20,7 +20,7 @@ Legend: DONE = implemented and verified as stated | PARTIAL | TODO
 | Home page (live DB queries, ISR 5 min) | PARTIAL | verified against a mock REST API, not a real Supabase |
 
 ## How verified
-- `npm run typecheck`, `npm run lint`, `npm test` (68 unit tests), `npm run test:db` (65 assertions, needs local Postgres 15+), `next build`.
+- `npm run typecheck`, `npm run lint`, `npm test` (68 unit tests), `npm run test:db` (77 assertions, needs local Postgres 15+), `next build`.
 - HTTP checks against `next start`: redirects, lang/dir, canonical, hreflang, 404 status, admin gate, security headers.
 - NOT verified: real Supabase (Auth, PostgREST, Storage), browsers (Playwright not yet run), accessibility audits, Lighthouse.
 
