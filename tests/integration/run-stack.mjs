@@ -34,7 +34,7 @@ try {
     let ready = false;
     for (let attempt = 0; attempt < 60; attempt += 1) {
       try {
-        const response = await fetch(restUrl);
+        const response = await fetch(`${restUrl}/rest/v1/`);
         if (response.ok) {
           ready = true;
           break;
@@ -43,7 +43,7 @@ try {
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
     if (!ready) throw new Error("PostgREST did not become ready at " + restUrl);
-    testStatus = run("npx", ["vitest", "run", "tests/integration/public-data.test.ts"]);
+    testStatus = run("npx", ["vitest", "run", "--config", "vitest.integration.config.mts"]);
   }
 } finally {
   compose(["down", "--volumes", "--remove-orphans"]);

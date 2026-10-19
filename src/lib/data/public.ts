@@ -205,19 +205,19 @@ export async function searchLessons(locale: Locale, query: string, opts: { limit
   })) as SearchResult[];
 }
 
-export async function getPublicLessonUrls(): Promise<Array<{ locale: Locale; slug: string; updated_at: string }>> {
+export async function getPublicLessonUrls(): Promise<Array<{ lesson_id: string; locale: Locale; slug: string; updated_at: string }>> {
   const supabase = createPublicClient();
   const pageSize = 1000;
-  const all: Array<{ locale: Locale; slug: string; updated_at: string }> = [];
+  const all: Array<{ lesson_id: string; locale: Locale; slug: string; updated_at: string }> = [];
   for (let offset = 0; ; offset += pageSize) {
-    const { data, error } = await supabase.from("lesson_translations").select("locale, slug, updated_at")
+    const { data, error } = await supabase.from("lesson_translations").select("lesson_id, locale, slug, updated_at")
       .eq("status", "published").lte("published_at", new Date().toISOString())
       .order("updated_at", { ascending: false }).range(offset, offset + pageSize - 1);
     if (error) {
       failSoft("getPublicLessonUrls", error.message);
       return [];
     }
-    all.push(...(data ?? []) as Array<{ locale: Locale; slug: string; updated_at: string }>);
+    all.push(...(data ?? []) as Array<{ lesson_id: string; locale: Locale; slug: string; updated_at: string }>);
     if ((data?.length ?? 0) < pageSize) return all;
   }
 }

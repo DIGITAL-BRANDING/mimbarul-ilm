@@ -19,6 +19,7 @@
     "test:e2e": "playwright test",
     "test:db": "bash tests/integration/run.sh",
     "test:stack": "node tests/integration/run-stack.mjs",
+    "test:http": "bash tests/integration/http-checks.sh",
     "check": "npm run typecheck && npm run lint && npm run test"
   },
   "dependencies": {
