@@ -39,6 +39,9 @@ export function Footer({ locale, dict }: { locale: Locale; dict: Dictionary }) {
       <p className="ui border-t border-white/10 py-4 text-center text-xs text-ivory/60">
         © {new Date().getFullYear()} {dict.siteName}. {dict.footer.rights}
       </p>
+      <p className="ui pb-4 text-center text-[10px] uppercase tracking-[0.16em] text-ivory/45">
+        K-TECH SOLUTIONS LIMITED - KANO STATE - NIGERIA
+      </p>
     </footer>
   );
 }

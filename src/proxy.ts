@@ -17,13 +17,18 @@ function detectLocale(request: NextRequest): Locale {
 
 async function adminGate(request: NextRequest) {
   const env = getPublicEnv();
-  let response = NextResponse.next({ request });
+  const requestHeaders = new Headers(request.headers);
+  // Admin is not locale-prefixed. Keep its fallback/error UI in the admin language
+  // instead of letting the public Hausa default leak into the admin area.
+  requestHeaders.set("x-locale", "en");
+  const nextResponse = () => NextResponse.next({ request: { headers: requestHeaders } });
+  let response = nextResponse();
   const supabase = createServerClient(env.NEXT_PUBLIC_SUPABASE_URL, env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY, {
     cookies: {
       getAll: () => request.cookies.getAll(),
       setAll(list) {
         list.forEach(({ name, value }) => request.cookies.set(name, value));
-        response = NextResponse.next({ request });
+        response = nextResponse();
         list.forEach(({ name, value, options }) => response.cookies.set(name, value, options));
       },
     },
