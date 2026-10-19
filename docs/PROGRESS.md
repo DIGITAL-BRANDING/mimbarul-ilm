@@ -2,41 +2,49 @@
 
 Legend: DONE = implemented and verified as stated | PARTIAL | TODO
 
-## Verified so far (see "How verified")
+## Status
 | Area | Status | Notes |
 |---|---|---|
-| Project scaffold (Next 16.4, React 19, TS 5.9 strict, Tailwind 4, ESLint 9, Vitest, Playwright installed) | DONE | TypeScript 7 and ESLint 10 deliberately NOT used (ecosystem compatibility) |
-| Env validation (zod), `.env.example` | DONE | |
-| Supabase clients: browser, server (cookie), public (anon, cacheable), service (server-only) | DONE | |
-| DB schema (25 tables), migrations 0001-0007 | DONE | applied to PostgreSQL 16; 0007 also verified as an upgrade on existing data |
-| RLS on every table + least-privilege grants | DONE | 77 SQL assertions pass |
-| Triggers: status transitions, publish-rights, slug-change 301 redirects, revisions, audit log, role-escalation guard | DONE | |
-| Multilingual search (Hausa/Arabic/English folding) `search_lessons()` | DONE (DB) | no UI yet |
-| Storage buckets/policies (private + public) | WRITTEN, UNTESTED | needs a real Supabase project (no `storage` schema in test DB) |
-| i18n routing `/ha /ar /en`, RTL/LTR, hreflang + x-default, localized 404 | DONE | verified via HTTP on production build |
-| Fonts self-hosted; Hausa hooked letters + Arabic diacritics glyph coverage verified | DONE | Noto Serif + Amiri |
-| Admin auth: login action, server-side `requireStaff/requireAdmin`, proxy gate, logout, dashboard | PARTIAL | code builds and anonymous gate verified over HTTP; **login against a real Supabase Auth NOT yet exercised** |
-| Rich-text document validator, embed allowlist, safe redirect, slug, publishing rules | DONE | adversarial unit tests |
-| Home page (live DB queries, ISR 5 min) | PARTIAL | Real Postgres + PostgREST test stack and public-query integration suite added; stack execution remains unverified on this machine because Docker is unavailable |
-| Public lessons list and detail, search | DONE | Locale aware pages use the anonymous Supabase client; lesson document JSON is rendered as React nodes |
-| Sitemap and robots | DONE | Sitemap includes localized homes, lesson indexes and published translations only; robots blocks admin and search |
+| Scaffold (Next 16.4, React 19, TS 5.9 strict, Tailwind 4, ESLint 9, Vitest, Playwright installed) | DONE | TypeScript 7 / ESLint 10 deliberately not used (ecosystem compatibility) |
+| Env validation, Supabase clients (browser / server / anon-public / service) | DONE | |
+| DB schema + RLS + triggers, migrations 0001-0007 | DONE | 77 SQL assertions; 0007 verified as an upgrade on existing data |
+| Multilingual search `search_lessons()` (Hausa/Arabic/English folding) | DONE | verified through PostgREST, incl. Arabic without diacritics |
+| i18n routing `/ha /ar /en`, RTL/LTR, localized 404, hreflang + x-default | DONE | verified over HTTP |
+| Admin auth (login action, server-side guards, proxy gate, dashboard) | PARTIAL | anonymous gate verified; **login against real Supabase Auth NOT exercised** |
+| Rich-text validator, embed allowlist, safe redirect, slug, publishing rules | DONE | adversarial unit tests |
+| **Lessons list**: search box, category + type filters, sort, pagination with total, empty/loading states | DONE | URL-driven; filtered pages `noindex`; out-of-range page shows last page (`noindex`) |
+| **Lesson page**: citations (grading + authority + verified), RTL Arabic blocks, translation notice, categories/tags, audio/video, related, share, print, breadcrumbs | DONE | verified over HTTP on a production build |
+| **Search page** (current language / all languages) | DONE | |
+| **Slug-change redirects** (permanent redirect from the old URL) | DONE | DB trigger records them; page serves them |
+| **SEO on lesson page**: canonical, OpenGraph, Article + BreadcrumbList JSON-LD, hreflang only for public translations | DONE | no invented publisher/ratings |
+| **Sitemap** (reciprocal alternates, published only) + robots | DONE | excludes drafts and scheduled items |
+| Home page | DONE | |
+| Storage buckets/policies | WRITTEN, UNTESTED | needs a real Supabase project |
+| Audio / video / books / about / contact / category pages | TODO | `audio`, `videos`, `books`, `about`, `contact`, `categories/*` still 404 |
+| Lesson editor, admin CRUD, media upload, revisions UI | TODO | Phase 3 |
+| Playwright E2E, accessibility audit, Lighthouse | TODO | |
 
-## How verified
-- `npm run typecheck`, `npm run lint`, `npm test` (68 unit tests), `npm run test:db` (77 assertions, needs local Postgres 15+), `next build`.
-- HTTP checks against `next start`: redirects, lang/dir, canonical, hreflang, 404 status, admin gate, security headers.
-- NOT verified: real Supabase (Auth, Storage), Postgres + PostgREST integration run (Docker unavailable on this machine), browsers (Playwright not yet run), accessibility audits, Lighthouse.
+## How verified (and what was NOT)
+- `npm run typecheck`, `npm run lint`, `npm test` (**102 unit tests**), `npm run test:db` (**77 SQL assertions**, local PostgreSQL 15+).
+- **Stack integration (24 tests)**: the app's real Supabase client against PostgreSQL + PostgREST under the real `anon` role and RLS
+  (`npm run test:stack` with Docker; during development it was executed with native PostgreSQL 16 + PostgREST 13.0.4 + nginx 1.24).
+- **HTTP checks (69)** against `next build && next start` connected to that stack: `bash tests/integration/http-checks.sh`.
+- NOT verified: real Supabase (Auth, Storage, hosted PostgREST), the Docker Compose file itself (Docker was unavailable; it pins
+  PostgREST 12.2.12 while development used 13.0.4), browsers/Playwright, accessibility audits, Lighthouse, load.
 
-## Remaining (planned order)
-1. **Phase 3 - Publishing system**: lesson editor (Tiptap), autosave with `version` check, translations UI, categories/tags/sources/media admin, preview, publish/archive, revision restore, media upload + public release.
-2. **Phase 4 - Public site**: categories, audio, video, books, about, richer lesson media/player support, contact (Turnstile + rate limit).
-3. **Phase 5 - SEO**: JSON-LD, redirects lookup in proxy/not-found, OG images.
-4. **Phase 6 - Tests/docs**: Playwright E2E, a11y checks, deployment/backup docs, final report.
+## Findings fixed during review (kept here so they are not reintroduced)
+1. `npm run test:stack` could not work: `vitest.config.mts` only includes `tests/unit`, and the Supabase client calls `/rest/v1/*`, which a bare PostgREST does not serve. Added `vitest.integration.config.mts` and an nginx gateway to the compose stack.
+2. **Soft 404s**: a `loading.tsx` at `lessons/` wrapped the lesson page in Suspense, so `notFound()`/`permanentRedirect()` ran after streaming started and returned HTTP 200. `loading.tsx` now lives in the `(index)` route group and covers only the listing.
+3. `notFound()` from a page rendered a bare error shell because the root layout called `notFound()` itself. The layout now falls back to the default locale.
+4. Past-the-end pages: PostgREST answers HTTP 416 (and some versions send a truncated error body). Detected by status code, never by body.
+5. Citations previously printed the raw grade code (e.g. `unverified`) in English for every language; now localized, attributed to the named authority, and explicitly labelled verified/unverified.
 
 ## Known issues / decisions
 - CSP uses `'unsafe-inline'` for scripts (Next bootstrap); move to nonces before launch.
 - Hausa and Arabic interface strings are drafts and need native-speaker review.
-- Publication status lives on translations only (no lesson-level status) to avoid contradictory values.
-- No generated Supabase types yet; `src/types/db.ts` is hand-written.
-- MFA enforcement, login rate-limiting beyond Supabase's built-in limits: TODO.
-- `/` and other unprefixed paths use a 307 redirect (locale chosen by cookie/Accept-Language).
-- Remaining home page links such as audio and video routes still need their public pages.
+- Publication status lives on translations only (no lesson-level status).
+- No generated Supabase types; `src/types/db.ts` and `src/lib/data/*.ts` row types are hand-written (`supabase gen types` once a project is linked).
+- MFA enforcement and login rate limiting beyond Supabase's built-in limits: TODO.
+- `/` and unprefixed paths use a 307 locale redirect.
+- Out-of-range list pages return 200 + `noindex` (not a redirect) because that route streams behind `loading.tsx`.
+- Lesson pages are ISR (5 min). A scheduled lesson appears within that window of its publish time.

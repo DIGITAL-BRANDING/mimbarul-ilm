@@ -12,4 +12,4 @@ npm run dev                     # http://localhost:3000  (redirects to /ha)
 Provision the first admin: [docs/ADMIN_PROVISIONING.md](docs/ADMIN_PROVISIONING.md).
 
 ## Checks
-`npm run typecheck && npm run lint && npm test`. `npm run test:stack` starts an isolated PostgreSQL + PostgREST stack with Docker Compose and runs public data integration tests through the app's Supabase client under the real anonymous database role and RLS policies. `npm run test:db` remains available for the SQL-only suite (needs a local PostgreSQL 15+ with `PG*` env vars set).
+`npm run typecheck && npm run lint && npm test`. `npm run test:stack` starts an isolated PostgreSQL + PostgREST stack with Docker Compose and runs public data integration tests through the app's Supabase client under the real anonymous database role and RLS policies. `npm run test:http` runs ~70 HTTP checks against a running production build connected to that stack (see the header of `tests/integration/http-checks.sh`). `npm run test:db` remains available for the SQL-only suite (needs a local PostgreSQL 15+ with `PG*` env vars set).
