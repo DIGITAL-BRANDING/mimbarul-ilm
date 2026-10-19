@@ -164,6 +164,8 @@ export interface PublicMedia {
 type MediaRow = {
   id: string;
   kind: PublicMedia["kind"];
+  storage_provider: "supabase" | "cloudflare_r2" | null;
+  storage_path: string | null;
   public_path: string | null;
   external_provider: string | null;
   external_id: string | null;
@@ -174,16 +176,27 @@ type MediaRow = {
   media_asset_translations: Array<{ locale: Locale; title: string | null; alt_text: string | null; caption: string | null }>;
 };
 
-const MEDIA_SELECT = "id, kind, public_path, external_provider, external_id, mime_type, width, height, duration_seconds, media_asset_translations(locale, title, alt_text, caption)";
+const MEDIA_SELECT = "id, kind, storage_provider, storage_path, public_path, external_provider, external_id, mime_type, width, height, duration_seconds, media_asset_translations(locale, title, alt_text, caption)";
 
 function toPublicMedia(row: MediaRow, locale: Locale, embedFor: (p: string, id: string) => string | null): PublicMedia {
   const tr = row.media_asset_translations.find((t) => t.locale === locale) ?? row.media_asset_translations[0];
-  const base = getPublicEnv().NEXT_PUBLIC_SUPABASE_URL;
+  const env = getPublicEnv();
+  const objectPath = row.public_path ?? row.storage_path;
+  const url = row.storage_provider === "cloudflare_r2"
+    ? env.NEXT_PUBLIC_MEDIA_CDN_URL && objectPath
+      ? `${env.NEXT_PUBLIC_MEDIA_CDN_URL}/${objectPath.split("/").map(encodeURIComponent).join("/")}`
+      : null
+    : objectPath
+      ? `${env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/media-public/${objectPath.split("/").map(encodeURIComponent).join("/")}`
+      : null;
+  const streamUrl = row.external_provider === "cloudflare_stream" && row.external_id && env.NEXT_PUBLIC_CLOUDFLARE_STREAM_CUSTOMER_CODE
+    ? `https://customer-${env.NEXT_PUBLIC_CLOUDFLARE_STREAM_CUSTOMER_CODE}.cloudflarestream.com/${encodeURIComponent(row.external_id)}/iframe`
+    : null;
   return {
     id: row.id,
     kind: row.kind,
-    url: row.public_path ? `${base}/storage/v1/object/public/media-public/${row.public_path.split("/").map(encodeURIComponent).join("/")}` : null,
-    embedUrl: row.external_provider && row.external_id ? embedFor(row.external_provider, row.external_id) : null,
+    url,
+    embedUrl: streamUrl ?? (row.external_provider && row.external_id ? embedFor(row.external_provider, row.external_id) : null),
     mime_type: row.mime_type,
     width: row.width,
     height: row.height,

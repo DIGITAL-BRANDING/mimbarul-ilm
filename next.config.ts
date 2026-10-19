@@ -3,6 +3,9 @@ import type { NextConfig } from "next";
 const supabaseHost = process.env.NEXT_PUBLIC_SUPABASE_URL
   ? new URL(process.env.NEXT_PUBLIC_SUPABASE_URL).hostname
   : undefined;
+const mediaCdnHost = process.env.NEXT_PUBLIC_MEDIA_CDN_URL
+  ? new URL(process.env.NEXT_PUBLIC_MEDIA_CDN_URL).hostname
+  : undefined;
 
 /**
  * Security headers. CSP is intentionally conservative; video embeds are
@@ -14,9 +17,9 @@ const csp = [
   "form-action 'self'",
   "frame-ancestors 'none'",
   "object-src 'none'",
-  "img-src 'self' data: blob: https://i.ytimg.com" + (supabaseHost ? ` https://${supabaseHost}` : ""),
-  "media-src 'self' blob:" + (supabaseHost ? ` https://${supabaseHost}` : ""),
-  "frame-src https://www.youtube-nocookie.com https://player.vimeo.com",
+  "img-src 'self' data: blob: https://i.ytimg.com" + (supabaseHost ? ` https://${supabaseHost}` : "") + (mediaCdnHost ? ` https://${mediaCdnHost}` : ""),
+  "media-src 'self' blob:" + (supabaseHost ? ` https://${supabaseHost}` : "") + (mediaCdnHost ? ` https://${mediaCdnHost}` : ""),
+  "frame-src https://www.youtube-nocookie.com https://player.vimeo.com https://customer-*.cloudflarestream.com",
   "font-src 'self' data:",
   "style-src 'self' 'unsafe-inline'",
   // Next.js requires inline bootstrap scripts; replace with nonces before launch (see docs/PROGRESS.md).
