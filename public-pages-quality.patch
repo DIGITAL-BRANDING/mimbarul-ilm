@@ -1,0 +1,2617 @@
+From a8acd4fead39e29bd86b8e082a22e7ba75961427 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 19 Oct 2026 07:17:41 +0000
+Subject: [PATCH 1/3] test: make the Docker integration stack runnable
+ (integration vitest config, nginx /rest/v1 gateway)
+
+---
+ tests/integration/run-stack.mjs            |  4 +-
+ tests/integration/stack/docker-compose.yml | 10 +++-
+ tests/integration/stack/nginx.conf         | 10 ++++
+ tests/integration/stack/seed.sql           | 64 ++++++++++++++++++++++
+ vitest.config.mts                          |  2 +-
+ vitest.integration.config.mts              |  8 +++
+ 6 files changed, 94 insertions(+), 4 deletions(-)
+ create mode 100644 tests/integration/stack/nginx.conf
+ create mode 100644 vitest.integration.config.mts
+
+diff --git a/tests/integration/run-stack.mjs b/tests/integration/run-stack.mjs
+index f0fe35f..79ff837 100644
+--- a/tests/integration/run-stack.mjs
++++ b/tests/integration/run-stack.mjs
+@@ -34,7 +34,7 @@ try {
+     let ready = false;
+     for (let attempt = 0; attempt < 60; attempt += 1) {
+       try {
+-        const response = await fetch(restUrl);
++        const response = await fetch(`${restUrl}/rest/v1/`);
+         if (response.ok) {
+           ready = true;
+           break;
+@@ -43,7 +43,7 @@ try {
+       await new Promise((resolve) => setTimeout(resolve, 500));
+     }
+     if (!ready) throw new Error("PostgREST did not become ready at " + restUrl);
+-    testStatus = run("npx", ["vitest", "run", "tests/integration/public-data.test.ts"]);
++    testStatus = run("npx", ["vitest", "run", "--config", "vitest.integration.config.mts"]);
+   }
+ } finally {
+   compose(["down", "--volumes", "--remove-orphans"]);
+diff --git a/tests/integration/stack/docker-compose.yml b/tests/integration/stack/docker-compose.yml
+index 934224e..c2bda30 100644
+--- a/tests/integration/stack/docker-compose.yml
++++ b/tests/integration/stack/docker-compose.yml
+@@ -34,5 +34,13 @@ services:
+       PGRST_DB_ANON_ROLE: anon
+       PGRST_JWT_SECRET: test-stack-jwt-secret-at-least-32-bytes-long
+       PGRST_SERVER_PORT: 3000
++    # Not published: reached only through the gateway below.
++
++  gateway:
++    image: nginx:1.27-alpine
++    depends_on:
++      - rest
++    volumes:
++      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+     ports:
+-      - "${TEST_REST_PORT:-55433}:3000"
++      - "${TEST_REST_PORT:-55433}:8080"
+diff --git a/tests/integration/stack/nginx.conf b/tests/integration/stack/nginx.conf
+new file mode 100644
+index 0000000..913deef
+--- /dev/null
++++ b/tests/integration/stack/nginx.conf
+@@ -0,0 +1,10 @@
++# Test-only gateway that mimics Supabase's API gateway: the Supabase JS client always calls /rest/v1/*,
++# while a bare PostgREST serves from "/". Mounted as /etc/nginx/conf.d/default.conf in docker-compose.yml.
++server {
++  listen 8080;
++  location = /health { return 200 "ok"; }
++  location /rest/v1/ {
++    proxy_pass http://rest:3000/;
++    proxy_set_header Host $host;
++  }
++}
+diff --git a/tests/integration/stack/seed.sql b/tests/integration/stack/seed.sql
+index d4ac412..8331cbd 100644
+--- a/tests/integration/stack/seed.sql
++++ b/tests/integration/stack/seed.sql
+@@ -12,3 +12,67 @@ insert into public.lesson_translations (id, lesson_id, locale, title, slug, exce
+ 
+ insert into public.sources (id, source_type, title) values ('50000000-0000-0000-0000-000000000001', 'other', 'Littafin gwaji');
+ insert into public.lesson_sources (lesson_id, source_id, page) values ('10000000-0000-0000-0000-000000000001', '50000000-0000-0000-0000-000000000001', '12');
++
++-- =====================================================================================================
++-- Extended fixtures: cases that MUST stay hidden or behave specially on the public site.
++-- =====================================================================================================
++insert into public.lessons (id, author_id, content_type, original_locale) values
++  ('10000000-0000-0000-0000-000000000003', 'a0000000-0000-0000-0000-000000000001', 'article', 'ha'),
++  ('10000000-0000-0000-0000-000000000004', 'a0000000-0000-0000-0000-000000000001', 'article', 'ha');
++
++insert into public.author_profile_translations (author_id, locale, display_name) values
++  ('a0000000-0000-0000-0000-000000000001', 'ha', 'Marubuci na gwaji');
++
++-- L1: a PUBLISHED, reviewed English translation
++insert into public.lesson_translations (id, lesson_id, locale, kind, translator_name, title, slug, excerpt, body, body_text, status, published_at) values
++  ('20000000-0000-0000-0000-000000000011', '10000000-0000-0000-0000-000000000001', 'en', 'translation', 'Fixture Translator', 'Knowledge test', 'knowledge-test', 'A public test lesson',
++   '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"This is public text."}]}]}', 'This is public text.', 'published', now() - interval '1 minute');
++update public.lesson_translations set review_status = 'reviewed' where id = '20000000-0000-0000-0000-000000000011';
++
++-- L3: Hausa lesson with an Arabic hadith block. Its English translation is still a DRAFT and must stay private.
++insert into public.lesson_translations (id, lesson_id, locale, title, slug, excerpt, body, body_text, status, published_at) values
++  ('20000000-0000-0000-0000-000000000003', '10000000-0000-0000-0000-000000000003', 'ha', 'Niyya a ayyuka', 'niyya-a-ayyuka', 'Bayani kan niyya',
++   '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Hadisi ya ce:"}]},{"type":"blockquote","attrs":{"kind":"hadith","dir":"rtl","lang":"ar"},"content":[{"type":"paragraph","attrs":{"dir":"rtl","lang":"ar"},"content":[{"type":"text","text":"إِنَّمَا الْأَعْمَالُ بِالنِّيَّاتِ"}]}]}]}',
++   E'Hadisi ya ce:\nإِنَّمَا الْأَعْمَالُ بِالنِّيَّاتِ', 'published', now() - interval '2 days');
++insert into public.lesson_translations (id, lesson_id, locale, kind, translator_name, title, slug, excerpt, body_text, status) values
++  ('20000000-0000-0000-0000-000000000013', '10000000-0000-0000-0000-000000000003', 'en', 'translation', 'Draft Translator', 'Intentions (unfinished)', 'intentions-draft', 'Not ready', 'Not ready for the public', 'draft');
++
++-- L4: published but SCHEDULED for the future
++insert into public.lesson_translations (id, lesson_id, locale, title, slug, excerpt, body_text, status, published_at) values
++  ('20000000-0000-0000-0000-000000000004', '10000000-0000-0000-0000-000000000004', 'ha', 'Darasi na nan gaba', 'nan-gaba', 'Za a buga daga baya', 'Rubutu na nan gaba', 'published', now() + interval '7 days');
++
++-- Citations: one unverified, one graded + verified
++insert into public.sources (id, source_type, title, author_or_compiler) values ('50000000-0000-0000-0000-000000000002', 'hadith_collection', 'Fixture Hadith Collection', 'Fixture Compiler');
++insert into public.lesson_sources (lesson_id, source_id, hadith_number, authenticity_grade, graded_by, reference_verified, quotation, sort_order) values
++  ('10000000-0000-0000-0000-000000000003', '50000000-0000-0000-0000-000000000002', '1', 'sahih', 'Fixture authority', true, 'Fixture quotation', 0);
++
++-- Taxonomy
++insert into public.categories (id, slug, sort_order) values ('c0000000-0000-0000-0000-000000000001', 'fixture-cat', 1);
++insert into public.category_translations (category_id, locale, name, slug) values
++  ('c0000000-0000-0000-0000-000000000001', 'ha', 'Fanni na gwaji', 'fanni-na-gwaji'),
++  ('c0000000-0000-0000-0000-000000000001', 'en', 'Test subject', 'test-subject');
++insert into public.lesson_categories values
++  ('10000000-0000-0000-0000-000000000001', 'c0000000-0000-0000-0000-000000000001'),
++  ('10000000-0000-0000-0000-000000000003', 'c0000000-0000-0000-0000-000000000001');
++insert into public.tags (id, slug) values ('70000000-0000-0000-0000-000000000001', 'imani');
++insert into public.tag_translations values ('70000000-0000-0000-0000-000000000001', 'ha', 'Imani');
++insert into public.lesson_tags values ('10000000-0000-0000-0000-000000000001', '70000000-0000-0000-0000-000000000001');
++insert into public.related_lessons (lesson_id, related_lesson_id) values ('10000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000003');
++
++-- Media: a public audio file, a PRIVATE audio file (must never be exposed), and a public YouTube embed
++insert into public.media_assets (id, kind, storage_path, public_path, is_public, mime_type, duration_seconds) values
++  ('60000000-0000-0000-0000-000000000001', 'audio', 'private/pub.mp3', 'lessons/pub file.mp3', true, 'audio/mpeg', 60),
++  ('60000000-0000-0000-0000-000000000002', 'audio', 'private/secret.mp3', null, false, 'audio/mpeg', 30);
++insert into public.media_assets (id, kind, external_provider, external_id, is_public) values ('60000000-0000-0000-0000-000000000003', 'video', 'youtube', 'dQw4w9WgXcQ', true);
++insert into public.media_asset_translations (media_id, locale, title) values
++  ('60000000-0000-0000-0000-000000000001', 'ha', 'Sautin gwaji'), ('60000000-0000-0000-0000-000000000003', 'ha', 'Bidiyon gwaji');
++insert into public.lesson_media (lesson_id, media_id, role) values
++  ('10000000-0000-0000-0000-000000000001', '60000000-0000-0000-0000-000000000001', 'audio'),
++  ('10000000-0000-0000-0000-000000000001', '60000000-0000-0000-0000-000000000002', 'audio'),
++  ('10000000-0000-0000-0000-000000000003', '60000000-0000-0000-0000-000000000003', 'video');
++
++-- Private data that must never be readable with the anonymous key
++insert into public.contact_messages (name, email, message) values ('Visitor', 'v@example.com', 'private message');
++
++-- A renamed lesson keeps working through the redirect table
++insert into public.url_redirects (from_path, to_path) values ('/ha/lessons/tsohon-suna', '/ha/lessons/gwajin-ilimi');
+diff --git a/vitest.config.mts b/vitest.config.mts
+index 1e74f47..d85d21d 100644
+--- a/vitest.config.mts
++++ b/vitest.config.mts
+@@ -2,6 +2,6 @@ import { defineConfig } from "vitest/config";
+ import path from "node:path";
+ 
+ export default defineConfig({
+-  resolve: { alias: { "@": path.resolve(__dirname, "src"), "server-only": path.resolve(__dirname, "tests/stubs/server-only.ts") } },
++  resolve: { alias: { "@": path.resolve(import.meta.dirname, "src"), "server-only": path.resolve(import.meta.dirname, "tests/stubs/server-only.ts") } },
+   test: { include: ["tests/unit/**/*.test.ts", "tests/unit/**/*.test.tsx"], environment: "node" },
+ });
+diff --git a/vitest.integration.config.mts b/vitest.integration.config.mts
+new file mode 100644
+index 0000000..14848d1
+--- /dev/null
++++ b/vitest.integration.config.mts
+@@ -0,0 +1,8 @@
++import { defineConfig } from "vitest/config";
++import path from "node:path";
++
++// Integration tests talk to a real PostgREST + PostgreSQL stack (see tests/integration/stack). Run via `npm run test:stack`.
++export default defineConfig({
++  resolve: { alias: { "@": path.resolve(import.meta.dirname, "src"), "server-only": path.resolve(import.meta.dirname, "tests/stubs/server-only.ts") } },
++  test: { include: ["tests/integration/**/*.test.ts"], environment: "node", testTimeout: 20_000, fileParallelism: false },
++});
+-- 
+2.43.0
+
+
+From f3f4cf3df95d71b8d31e136a162accb243070580 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 19 Oct 2026 07:17:41 +0000
+Subject: [PATCH 2/3] feat(public): lesson page, listing/search, redirects,
+ JSON-LD, sitemap alternates, safer renderer
+
+- lesson page: translation notice, citations (grade + named authority + verified), taxonomy, audio/video, related, share, breadcrumbs
+- renderer: dir=auto for mixed scripts, labelled quote kinds, media refs
+- listing/search: filters, sort, total, pagination; out-of-range pages clamp (HTTP 416 handled)
+- slug-change redirects served; localized 404 for explicit notFound()
+- fixes soft-404 caused by loading.tsx wrapping the detail route
+---
+ src/app/(site)/[locale]/layout.tsx            |   9 +-
+ .../[locale]/lessons/(index)/loading.tsx      |  16 +
+ .../(site)/[locale]/lessons/(index)/page.tsx  |  76 ++++
+ .../(site)/[locale]/lessons/[slug]/page.tsx   | 237 ++++++++++--
+ src/app/(site)/[locale]/lessons/page.tsx      |  40 ---
+ src/app/(site)/[locale]/not-found.tsx         |  23 ++
+ src/app/(site)/[locale]/page.tsx              |  32 +-
+ src/app/(site)/[locale]/search/page.tsx       |  81 +++--
+ src/app/sitemap.ts                            |  38 +-
+ src/components/lessons/Citations.tsx          |  76 ++++
+ src/components/lessons/FilterForm.tsx         |  79 ++++
+ src/components/lessons/JsonLd.tsx             |   6 +
+ src/components/lessons/LessonList.tsx         |  33 ++
+ src/components/lessons/MediaBlock.tsx         |  47 +++
+ src/components/lessons/Pagination.tsx         |  31 ++
+ src/components/lessons/PrintButton.tsx        |   9 +
+ src/lib/content/list-params.ts                |  53 +++
+ src/lib/content/render-document.tsx           | 131 +++++--
+ src/lib/data/lessons.ts                       | 338 ++++++++++++++++++
+ src/lib/data/public.ts                        |   8 +-
+ src/lib/format.ts                             |  19 +
+ src/lib/i18n/dictionaries.ts                  |  60 ++++
+ src/lib/security/embed.ts                     |   7 +
+ src/lib/seo/urls.ts                           |  39 ++
+ tests/integration/public-data.test.ts         |   5 +-
+ tests/integration/public-pages.test.ts        | 124 +++++++
+ tests/unit/list-params.test.ts                |  61 ++++
+ tests/unit/render-document.test.tsx           | 123 +++++++
+ 28 files changed, 1637 insertions(+), 164 deletions(-)
+ create mode 100644 src/app/(site)/[locale]/lessons/(index)/loading.tsx
+ create mode 100644 src/app/(site)/[locale]/lessons/(index)/page.tsx
+ delete mode 100644 src/app/(site)/[locale]/lessons/page.tsx
+ create mode 100644 src/app/(site)/[locale]/not-found.tsx
+ create mode 100644 src/components/lessons/Citations.tsx
+ create mode 100644 src/components/lessons/FilterForm.tsx
+ create mode 100644 src/components/lessons/JsonLd.tsx
+ create mode 100644 src/components/lessons/LessonList.tsx
+ create mode 100644 src/components/lessons/MediaBlock.tsx
+ create mode 100644 src/components/lessons/Pagination.tsx
+ create mode 100644 src/components/lessons/PrintButton.tsx
+ create mode 100644 src/lib/content/list-params.ts
+ create mode 100644 src/lib/data/lessons.ts
+ create mode 100644 src/lib/format.ts
+ create mode 100644 src/lib/seo/urls.ts
+ create mode 100644 tests/integration/public-pages.test.ts
+ create mode 100644 tests/unit/list-params.test.ts
+ create mode 100644 tests/unit/render-document.test.tsx
+
+diff --git a/src/app/(site)/[locale]/layout.tsx b/src/app/(site)/[locale]/layout.tsx
+index 61ec751..22bd193 100644
+--- a/src/app/(site)/[locale]/layout.tsx
++++ b/src/app/(site)/[locale]/layout.tsx
+@@ -1,12 +1,11 @@
+ import type { Metadata } from "next";
+-import { notFound } from "next/navigation";
+ import "@fontsource-variable/noto-serif/wght.css";
+ import "@fontsource-variable/noto-serif/wght-italic.css";
+ import "@fontsource/amiri/arabic-400.css";
+ import "@fontsource/amiri/arabic-700.css";
+ import "../../globals.css";
+ import { getDictionary } from "@/lib/i18n/dictionaries";
+-import { getDir, isLocale, LOCALES } from "@/lib/i18n/config";
++import { DEFAULT_LOCALE, getDir, isLocale, LOCALES } from "@/lib/i18n/config";
+ import { getPublicEnv } from "@/lib/env";
+ 
+ export function generateStaticParams() {
+@@ -27,8 +26,10 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
+ 
+ export default async function LocaleLayout({ children, params }: { children: React.ReactNode; params: Promise<{ locale: string }> }) {
+   const { locale: raw } = await params;
+-  if (!isLocale(raw)) notFound();
+-  const locale = raw;
++  // Do NOT call notFound() here. While Next renders a not-found page it may render this layout without route params; a
++  // second notFound() would then replace the localized 404 with a bare error shell. Invalid locales never reach this
++  // layout anyway: dynamicParams=false rejects them and src/proxy.ts redirects unknown prefixes.
++  const locale = isLocale(raw) ? raw : DEFAULT_LOCALE;
+   const dict = getDictionary(locale);
+ 
+   return (
+diff --git a/src/app/(site)/[locale]/lessons/(index)/loading.tsx b/src/app/(site)/[locale]/lessons/(index)/loading.tsx
+new file mode 100644
+index 0000000..6f24aab
+--- /dev/null
++++ b/src/app/(site)/[locale]/lessons/(index)/loading.tsx
+@@ -0,0 +1,16 @@
++export default function Loading() {
++  return (
++    <div className="mx-auto max-w-4xl px-4 py-12 sm:px-6" role="status" aria-busy="true">
++      <span className="sr-only">Loading…</span>
++      <div className="h-8 w-48 animate-pulse rounded bg-parchment" />
++      <div className="mt-8 space-y-6">
++        {[0, 1, 2, 3].map((i) => (
++          <div key={i} className="space-y-2">
++            <div className="h-6 w-2/3 animate-pulse rounded bg-parchment" />
++            <div className="h-4 w-full animate-pulse rounded bg-parchment/70" />
++          </div>
++        ))}
++      </div>
++    </div>
++  );
++}
+diff --git a/src/app/(site)/[locale]/lessons/(index)/page.tsx b/src/app/(site)/[locale]/lessons/(index)/page.tsx
+new file mode 100644
+index 0000000..dc18752
+--- /dev/null
++++ b/src/app/(site)/[locale]/lessons/(index)/page.tsx
+@@ -0,0 +1,76 @@
++import type { Metadata } from "next";
++import { notFound } from "next/navigation";
++import { FilterForm } from "@/components/lessons/FilterForm";
++import { LessonList } from "@/components/lessons/LessonList";
++import { Pagination } from "@/components/lessons/Pagination";
++import { SiteShell } from "@/components/layout/SiteShell";
++import { buildListHref, hasActiveFilters, PAGE_SIZE, parseListParams } from "@/lib/content/list-params";
++import { getCategoryOptions, getLessonList } from "@/lib/data/lessons";
++import { isLocale, LOCALES, localePath } from "@/lib/i18n/config";
++import { getDictionary } from "@/lib/i18n/dictionaries";
++
++type Props = { params: Promise<{ locale: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> };
++
++export async function generateMetadata({ params, searchParams }: Props): Promise<Metadata> {
++  const { locale } = await params;
++  if (!isLocale(locale)) return {};
++  const p = parseListParams(await searchParams);
++  const base = localePath(locale, "/lessons");
++  return {
++    title: getDictionary(locale).lessons.title,
++    // Filtered/search variants are for people, not the index; plain pagination stays indexable.
++    robots: hasActiveFilters(p) ? { index: false, follow: true } : undefined,
++    alternates: {
++      canonical: buildListHref(base, { page: p.page }),
++      languages: Object.fromEntries(LOCALES.map((l) => [l, localePath(l, "/lessons")])),
++    },
++  };
++}
++
++export default async function LessonsPage({ params, searchParams }: Props) {
++  const [{ locale }, raw] = await Promise.all([params, searchParams]);
++  if (!isLocale(locale)) notFound();
++  const dict = getDictionary(locale);
++  let p = parseListParams(raw);
++  const base = localePath(locale, "/lessons");
++
++  const categories = await getCategoryOptions(locale);
++  const categoryId = p.category ? (categories.find((c) => c.slug === p.category)?.id ?? null) : null;
++  // An unknown category slug yields an empty result rather than silently ignoring the filter.
++  let { items, total } = p.category && !categoryId ? { items: [], total: 0 } : await getLessonList(locale, p, categoryId);
++
++  // A page past the end (old bookmark, edited URL) shows the real last page instead of an empty list.
++  // Rendered in place (not redirect()): this route streams behind loading.tsx, so a redirect would be a soft, status-200 one.
++  let clamped = false;
++  if (items.length === 0 && total > 0 && p.page > 1) {
++    p = { ...p, page: Math.ceil(total / PAGE_SIZE) };
++    ({ items, total } = await getLessonList(locale, p, categoryId));
++    clamped = true;
++  }
++
++  return (
++    <SiteShell locale={locale} path="/lessons">
++      {clamped && <meta name="robots" content="noindex, follow" />}
++      <section className="mx-auto max-w-4xl px-4 py-12 sm:px-6">
++        <h1 className="text-3xl font-semibold text-deep">{dict.lessons.title}</h1>
++        <div className="mt-6">
++          <FilterForm action={base} params={p} categories={categories} dict={dict} />
++        </div>
++        <p className="ui mt-6 text-sm text-mute" aria-live="polite">
++          {total} {dict.lessons.results}
++        </p>
++        <div className="mt-3">
++          {items.length > 0 ? (
++            <LessonList items={items} locale={locale} dict={dict} />
++          ) : (
++            <div className="rounded border border-dashed border-rule bg-parchment/40 p-8">
++              <p className="font-semibold text-deep">{dict.lessons.noResultsTitle}</p>
++              <p className="mt-1 text-mute">{dict.lessons.noResultsBody}</p>
++            </div>
++          )}
++        </div>
++        <Pagination base={base} params={p} total={total} dict={dict} />
++      </section>
++    </SiteShell>
++  );
++}
+diff --git a/src/app/(site)/[locale]/lessons/[slug]/page.tsx b/src/app/(site)/[locale]/lessons/[slug]/page.tsx
+index 10d1b5e..ce3d53f 100644
+--- a/src/app/(site)/[locale]/lessons/[slug]/page.tsx
++++ b/src/app/(site)/[locale]/lessons/[slug]/page.tsx
+@@ -1,52 +1,221 @@
+ import type { Metadata } from "next";
+-import { notFound } from "next/navigation";
++import { notFound, permanentRedirect } from "next/navigation";
++import Link from "next/link";
++import { Citations } from "@/components/lessons/Citations";
++import { JsonLd } from "@/components/lessons/JsonLd";
++import { LessonList } from "@/components/lessons/LessonList";
++import { MediaBlock } from "@/components/lessons/MediaBlock";
++import { PrintButton } from "@/components/lessons/PrintButton";
+ import { SiteShell } from "@/components/layout/SiteShell";
+-import { renderDocument } from "@/lib/content/render-document";
+-import { getLessonBySlug, getLessonSources, getLessonTranslations } from "@/lib/data/public";
+-import { isLocale, localePath } from "@/lib/i18n/config";
++import { collectMediaIds, renderDocument } from "@/lib/content/render-document";
++import { getLessonTranslations } from "@/lib/data/public";
++import { getCitations, getLessonDetail, getLessonMedia, getLessonTaxonomy, getMediaByIds, getRedirectTarget, getRelatedLessons } from "@/lib/data/lessons";
++import { getPublicEnv } from "@/lib/env";
++import { formatDate } from "@/lib/format";
++import { isLocale, LOCALE_META, localePath, type Locale } from "@/lib/i18n/config";
+ import { getDictionary } from "@/lib/i18n/dictionaries";
++import { absoluteUrl, lessonLanguages, lessonPath, shareLinks } from "@/lib/seo/urls";
+ 
+ export const revalidate = 300;
+ 
+-export async function generateMetadata({ params }: { params: Promise<{ locale: string; slug: string }> }): Promise<Metadata> {
++type Props = { params: Promise<{ locale: string; slug: string }> };
++
++export async function generateMetadata({ params }: Props): Promise<Metadata> {
+   const { locale: raw, slug } = await params;
+   if (!isLocale(raw)) return {};
+-  const lesson = await getLessonBySlug(raw, slug);
+-  if (!lesson) return {};
+-  const translations = await getLessonTranslations(lesson.lesson_id);
++  const lesson = await getLessonDetail(raw, slug);
++  if (!lesson) return { robots: { index: false, follow: false } };
++  const alts = await getLessonTranslations(lesson.lesson_id);
++  const languages = lessonLanguages(alts, lesson.original_locale);
++  const description = lesson.seo_description || lesson.excerpt || undefined;
+   const title = lesson.seo_title || lesson.title;
++  const url = absoluteUrl(getPublicEnv().NEXT_PUBLIC_SITE_URL, lessonPath(raw, slug));
+   return {
+     title,
+-    description: lesson.seo_description || lesson.excerpt || undefined,
+-    alternates: {
+-      canonical: localePath(raw, `/lessons/${slug}`),
+-      languages: Object.fromEntries(translations.map((translation) => [translation.locale, localePath(translation.locale, `/lessons/${translation.slug}`)])),
++    description,
++    alternates: { canonical: lessonPath(raw, slug), languages },
++    openGraph: {
++      type: "article",
++      title,
++      description,
++      url,
++      siteName: getDictionary(raw).siteName,
++      locale: LOCALE_META[raw].ogLocale,
++      alternateLocale: alts.filter((a) => a.locale !== raw).map((a) => LOCALE_META[a.locale].ogLocale),
++      publishedTime: lesson.published_at,
++      modifiedTime: lesson.updated_at,
+     },
++    twitter: { card: "summary", title, description },
+   };
+ }
+ 
+-export default async function LessonPage({ params }: { params: Promise<{ locale: string; slug: string }> }) {
++export default async function LessonPage({ params }: Props) {
+   const { locale: raw, slug } = await params;
+   if (!isLocale(raw)) notFound();
+-  const lesson = await getLessonBySlug(raw, slug);
+-  if (!lesson) notFound();
+-  const [translations, sources] = await Promise.all([getLessonTranslations(lesson.lesson_id), getLessonSources(lesson.lesson_id)]);
+-  const dict = getDictionary(raw);
+-  return <SiteShell locale={raw} alternates={translations.map((translation) => ({ locale: translation.locale, href: localePath(translation.locale, `/lessons/${translation.slug}`) }))}>
+-    <article className="mx-auto max-w-3xl px-4 py-12 sm:px-6">
+-      <header className="border-b border-rule pb-6"><h1 className="text-3xl font-semibold leading-tight text-deep sm:text-4xl">{lesson.title}</h1>
+-        {lesson.excerpt && <p className="mt-4 text-lg leading-8 text-mute">{lesson.excerpt}</p>}
+-        <time className="ui mt-4 block text-sm text-mute" dateTime={lesson.published_at}>{dict.lesson.published}: {new Intl.DateTimeFormat(raw === "ha" ? "ha-NG" : raw, { dateStyle: "long", timeZone: "UTC" }).format(new Date(lesson.published_at))}</time>
+-      </header>
+-      <div className="py-5">{renderDocument(lesson.body)}</div>
+-      {sources.length > 0 && <section className="mt-10 border-t border-rule pt-6" aria-labelledby="sources-title"><h2 id="sources-title" className="text-xl font-semibold text-deep">{dict.lesson.sources}</h2>
+-        <ol className="mt-4 list-decimal space-y-3 ps-6">{sources.map((source) => <li key={source.id}>
+-          {source.source_url ? <a className="text-gold underline" href={source.source_url} rel="nofollow noopener noreferrer">{source.title}</a> : <span>{source.title}</span>}
+-          {source.author_or_compiler && <span> — {source.author_or_compiler}</span>}
+-          {(source.volume || source.page || source.chapter || source.hadith_number || source.edition_locator) && <span className="text-mute"> ({[source.volume, source.page, source.chapter, source.hadith_number, source.edition_locator].filter(Boolean).join(", ")})</span>}
+-          {source.authenticity_grade && <span className="ui text-sm text-mute"> — {source.authenticity_grade}</span>}
+-        </li>)}</ol>
+-      </section>}
+-    </article>
+-  </SiteShell>;
++  const locale: Locale = raw;
++  const lesson = await getLessonDetail(locale, slug);
++
++  if (!lesson) {
++    // A renamed lesson keeps working: the database recorded old -> new when the slug changed.
++    const target = await getRedirectTarget(lessonPath(locale, slug));
++    if (target) permanentRedirect(target);
++    notFound();
++  }
++
++  const dict = getDictionary(locale);
++  const mediaIds = collectMediaIds(lesson.body);
++  const [alts, taxonomy, citations, attached, related, inlineMedia] = await Promise.all([
++    getLessonTranslations(lesson.lesson_id),
++    getLessonTaxonomy(lesson.lesson_id, locale),
++    getCitations(lesson.lesson_id),
++    getLessonMedia(lesson.lesson_id, locale),
++    getRelatedLessons(lesson.lesson_id, locale),
++    getMediaByIds(mediaIds, locale),
++  ]);
++
++  const site = getPublicEnv().NEXT_PUBLIC_SITE_URL;
++  const url = absoluteUrl(site, lessonPath(locale, slug));
++  // Only translations that exist and are public are offered - never a guessed URL.
++  const alternates = alts.map((a) => ({ locale: a.locale, href: lessonPath(a.locale, a.slug) }));
++  const others = alternates.filter((a) => a.locale !== locale);
++
++  const jsonLd = {
++    "@context": "https://schema.org",
++    "@type": "Article",
++    headline: lesson.title,
++    ...(lesson.excerpt ? { description: lesson.excerpt } : {}),
++    inLanguage: locale,
++    datePublished: lesson.published_at,
++    dateModified: lesson.updated_at,
++    mainEntityOfPage: url,
++    ...(lesson.author_name ? { author: { "@type": "Person", name: lesson.author_name } } : {}),
++  };
++  const breadcrumbs = {
++    "@context": "https://schema.org",
++    "@type": "BreadcrumbList",
++    itemListElement: [
++      { "@type": "ListItem", position: 1, name: dict.lessons.breadcrumbHome, item: absoluteUrl(site, localePath(locale)) },
++      { "@type": "ListItem", position: 2, name: dict.lessons.title, item: absoluteUrl(site, localePath(locale, "/lessons")) },
++      { "@type": "ListItem", position: 3, name: lesson.title, item: url },
++    ],
++  };
++
++  return (
++    <SiteShell locale={locale} alternates={alternates}>
++      <JsonLd data={jsonLd} />
++      <JsonLd data={breadcrumbs} />
++      <article className="mx-auto max-w-3xl px-4 py-10 sm:px-6">
++        <nav aria-label="Breadcrumb" className="ui text-sm text-mute">
++          <ol className="flex flex-wrap items-center gap-x-2">
++            <li>
++              <Link className="hover:underline" href={localePath(locale)}>
++                {dict.lessons.breadcrumbHome}
++              </Link>
++            </li>
++            <li aria-hidden="true">/</li>
++            <li>
++              <Link className="hover:underline" href={localePath(locale, "/lessons")}>
++                {dict.lessons.title}
++              </Link>
++            </li>
++          </ol>
++        </nav>
++
++        <header className="mt-4 border-b border-rule pb-6">
++          <h1 className="text-3xl font-semibold leading-tight text-deep sm:text-4xl">{lesson.title}</h1>
++          {lesson.excerpt && <p className="mt-4 text-lg leading-8 text-mute">{lesson.excerpt}</p>}
++          <p className="ui mt-4 flex flex-wrap gap-x-4 gap-y-1 text-sm text-mute">
++            {lesson.author_name && <span>{lesson.author_name}</span>}
++            <span>
++              {dict.lesson.published}: <time dateTime={lesson.published_at}>{formatDate(lesson.published_at, locale)}</time>
++            </span>
++            {lesson.updated_at.slice(0, 10) !== lesson.published_at.slice(0, 10) && (
++              <span>
++                {dict.lesson.updated}: <time dateTime={lesson.updated_at}>{formatDate(lesson.updated_at, locale)}</time>
++              </span>
++            )}
++            {lesson.content_type !== "article" && <span>{dict.types[lesson.content_type]}</span>}
++          </p>
++
++          {/* Translations are always distinguishable from original writing. */}
++          {lesson.kind === "translation" && (
++            <div className="ui mt-4 rounded border border-rule bg-parchment/50 p-3 text-sm">
++              {lesson.translator_name && (
++                <p>
++                  {dict.lessons.translatedBy}: <span dir="auto">{lesson.translator_name}</span>
++                </p>
++              )}
++              <p>
++                {dict.lessons.originalLanguage}: <span lang={lesson.original_locale}>{LOCALE_META[lesson.original_locale].nativeName}</span>
++              </p>
++              <p className={lesson.review_status === "reviewed" ? "text-moss" : "text-mute"}>
++                {lesson.review_status === "reviewed" ? dict.lessons.translationReviewed : dict.lessons.translationUnreviewed}
++              </p>
++            </div>
++          )}
++
++          {others.length > 0 && (
++            <p className="ui mt-4 text-sm">
++              {dict.lesson.availableIn}:{" "}
++              {others.map((a, i) => (
++                <span key={a.locale}>
++                  {i > 0 && " · "}
++                  <Link className="text-gold underline" href={a.href} hrefLang={a.locale} lang={a.locale}>
++                    {LOCALE_META[a.locale].nativeName}
++                  </Link>
++                </span>
++              ))}
++            </p>
++          )}
++        </header>
++
++        <div className="py-5">{renderDocument(lesson.body, { dict, media: inlineMedia })}</div>
++
++        <MediaBlock items={attached} dict={dict} />
++        <Citations citations={citations} dict={dict} />
++
++        {(taxonomy.categories.length > 0 || taxonomy.tags.length > 0) && (
++          <section className="ui mt-10 space-y-3 border-t border-rule pt-6 text-sm">
++            {taxonomy.categories.length > 0 && (
++              <p>
++                <span className="font-medium">{dict.lessons.categoriesLabel}:</span>{" "}
++                {taxonomy.categories.map((c, i) => (
++                  <span key={c.slug}>
++                    {i > 0 && " · "}
++                    <Link className="text-gold underline" href={`${localePath(locale, "/lessons")}?category=${encodeURIComponent(c.slug)}`}>
++                      {c.name}
++                    </Link>
++                  </span>
++                ))}
++              </p>
++            )}
++            {taxonomy.tags.length > 0 && (
++              <p>
++                <span className="font-medium">{dict.lessons.tagsLabel}:</span> {taxonomy.tags.map((t) => t.name).join(" · ")}
++              </p>
++            )}
++          </section>
++        )}
++
++        <section className="no-print ui mt-8 flex flex-wrap items-center gap-2 border-t border-rule pt-6 text-sm" aria-label={dict.lessons.share}>
++          <span className="font-medium">{dict.lessons.shareVia}:</span>
++          {shareLinks(url, lesson.title).map((s) => (
++            <a key={s.id} href={s.href} target="_blank" rel="noopener noreferrer" className="rounded border border-rule px-3 py-1.5 hover:bg-parchment">
++              {s.label}
++            </a>
++          ))}
++          <PrintButton label={dict.lesson.print} />
++        </section>
++
++        {related.length > 0 && (
++          <section className="no-print mt-12" aria-labelledby="related-title">
++            <h2 id="related-title" className="mb-4 text-xl font-semibold text-deep">
++              {dict.lesson.related}
++            </h2>
++            <LessonList items={related} locale={locale} dict={dict} headingLevel={3} />
++          </section>
++        )}
++      </article>
++    </SiteShell>
++  );
+ }
+diff --git a/src/app/(site)/[locale]/lessons/page.tsx b/src/app/(site)/[locale]/lessons/page.tsx
+deleted file mode 100644
+index 9de8c96..0000000
+--- a/src/app/(site)/[locale]/lessons/page.tsx
++++ /dev/null
+@@ -1,40 +0,0 @@
+-import type { Metadata } from "next";
+-import Link from "next/link";
+-import { notFound } from "next/navigation";
+-import { SiteShell } from "@/components/layout/SiteShell";
+-import { getLessons } from "@/lib/data/public";
+-import { isLocale, localePath, type Locale } from "@/lib/i18n/config";
+-import { getDictionary } from "@/lib/i18n/dictionaries";
+-import type { LessonListItem } from "@/types/db";
+-
+-export const revalidate = 300;
+-
+-export async function generateMetadata({ params }: { params: Promise<{ locale: string }> }): Promise<Metadata> {
+-  const { locale } = await params;
+-  if (!isLocale(locale)) return {};
+-  return { title: getDictionary(locale).nav.lessons, alternates: { canonical: localePath(locale, "/lessons") } };
+-}
+-
+-function LessonRows({ items, locale }: { items: LessonListItem[]; locale: Locale }) {
+-  return <ul className="divide-y divide-rule border-y border-rule">{items.map((item) => <li key={item.id}>
+-    <Link href={localePath(locale, `/lessons/${item.slug}`)} className="group block py-5">
+-      <h2 className="text-xl font-semibold text-deep group-hover:underline">{item.title}</h2>
+-      {item.excerpt && <p className="mt-1 max-w-prose text-mute">{item.excerpt}</p>}
+-      <time className="ui mt-2 block text-xs text-mute" dateTime={item.published_at}>{new Intl.DateTimeFormat(locale === "ha" ? "ha-NG" : locale, { dateStyle: "long", timeZone: "UTC" }).format(new Date(item.published_at))}</time>
+-    </Link>
+-  </li>)}</ul>;
+-}
+-
+-export default async function LessonsPage({ params, searchParams }: { params: Promise<{ locale: string }>; searchParams: Promise<{ page?: string }> }) {
+-  const [{ locale: raw }, query] = await Promise.all([params, searchParams]);
+-  if (!isLocale(raw)) notFound();
+-  const page = Math.max(1, Math.min(1000, Number(query.page) || 1));
+-  const items = await getLessons(raw, { limit: 20, offset: (page - 1) * 20 });
+-  const dict = getDictionary(raw);
+-  return <SiteShell locale={raw} path="/lessons"><section className="mx-auto max-w-4xl px-4 py-12 sm:px-6">
+-    <h1 className="text-3xl font-semibold text-deep">{dict.nav.lessons}</h1>
+-    <div className="mt-6">{items.length ? <LessonRows items={items} locale={raw} /> : <p className="rounded border border-dashed border-rule p-8 text-mute">{dict.home.noContentBody}</p>}</div>
+-    {page > 1 && <Link className="ui mt-6 inline-block text-gold underline" href={localePath(raw, `/lessons?page=${page - 1}`)}>← {dict.nav.lessons}</Link>}
+-    {items.length === 20 && <Link className="ui ms-6 mt-6 inline-block text-gold underline" href={localePath(raw, `/lessons?page=${page + 1}`)}>{dict.home.viewAll} →</Link>}
+-  </section></SiteShell>;
+-}
+diff --git a/src/app/(site)/[locale]/not-found.tsx b/src/app/(site)/[locale]/not-found.tsx
+new file mode 100644
+index 0000000..fddfb04
+--- /dev/null
++++ b/src/app/(site)/[locale]/not-found.tsx
+@@ -0,0 +1,23 @@
++import { headers } from "next/headers";
++import Link from "next/link";
++import { SiteShell } from "@/components/layout/SiteShell";
++import { DEFAULT_LOCALE, isLocale, localePath } from "@/lib/i18n/config";
++import { getDictionary } from "@/lib/i18n/dictionaries";
++
++export default async function NotFound() {
++  const h = await headers();
++  const raw = h.get("x-locale");
++  const locale = isLocale(raw) ? raw : DEFAULT_LOCALE;
++  const dict = getDictionary(locale);
++  return (
++    <SiteShell locale={locale}>
++      <div className="mx-auto max-w-2xl px-4 py-24 text-center">
++        <h1 className="text-3xl font-semibold text-deep">{dict.notFound.title}</h1>
++        <p className="mt-4 text-mute">{dict.notFound.body}</p>
++        <Link href={localePath(locale)} className="ui mt-8 inline-block rounded bg-deep px-5 py-3 text-ivory hover:bg-moss">
++          {dict.notFound.back}
++        </Link>
++      </div>
++    </SiteShell>
++  );
++}
+diff --git a/src/app/(site)/[locale]/page.tsx b/src/app/(site)/[locale]/page.tsx
+index 1efd012..32899de 100644
+--- a/src/app/(site)/[locale]/page.tsx
++++ b/src/app/(site)/[locale]/page.tsx
+@@ -4,9 +4,9 @@ import { notFound } from "next/navigation";
+ import { MinbarMark } from "@/components/layout/MinbarMark";
+ import { SiteShell } from "@/components/layout/SiteShell";
+ import { getLatestLessons, getPrimaryAuthor, getTopCategories } from "@/lib/data/public";
+-import { isLocale, LOCALES, LOCALE_META, localePath, type Locale } from "@/lib/i18n/config";
++import { isLocale, LOCALES, LOCALE_META, localePath } from "@/lib/i18n/config";
+ import { getDictionary } from "@/lib/i18n/dictionaries";
+-import type { LessonListItem } from "@/types/db";
++import { LessonList } from "@/components/lessons/LessonList";
+ 
+ // Scheduled lessons become visible without a deploy: re-generate at most every 5 minutes.
+ export const revalidate = 300;
+@@ -28,28 +28,6 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
+   };
+ }
+ 
+-function formatDate(iso: string, locale: Locale) {
+-  return new Intl.DateTimeFormat(locale === "ar" ? "ar" : locale === "ha" ? "ha-NG" : "en", { dateStyle: "long", timeZone: "UTC" }).format(new Date(iso));
+-}
+-
+-function LessonList({ items, locale }: { items: LessonListItem[]; locale: Locale }) {
+-  return (
+-    <ul className="divide-y divide-rule border-y border-rule">
+-      {items.map((l) => (
+-        <li key={l.id}>
+-          <Link href={localePath(locale, `/lessons/${l.slug}`)} className="group block py-5">
+-            <h3 className="text-xl font-semibold text-deep group-hover:underline">{l.title}</h3>
+-            {l.excerpt && <p className="mt-1 max-w-prose text-mute">{l.excerpt}</p>}
+-            <p className="ui mt-2 text-xs text-mute">
+-              <time dateTime={l.published_at}>{formatDate(l.published_at, locale)}</time>
+-            </p>
+-          </Link>
+-        </li>
+-      ))}
+-    </ul>
+-  );
+-}
+-
+ export default async function HomePage({ params }: { params: Promise<{ locale: string }> }) {
+   const { locale: raw } = await params;
+   if (!isLocale(raw)) notFound();
+@@ -110,7 +88,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
+           </div>
+           <div className="mt-5">
+             {latest.length > 0 ? (
+-              <LessonList items={latest} locale={locale} />
++              <LessonList items={latest} locale={locale} dict={dict} headingLevel={3} />
+             ) : (
+               <div className="rounded border border-dashed border-rule bg-parchment/50 p-8">
+                 <p className="font-semibold text-deep">{dict.home.noContentTitle}</p>
+@@ -148,7 +126,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
+               </Link>
+             </div>
+             <div className="mt-5">
+-              <LessonList items={audio} locale={locale} />
++              <LessonList items={audio} locale={locale} dict={dict} headingLevel={3} />
+             </div>
+           </section>
+         )}
+@@ -164,7 +142,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
+               </Link>
+             </div>
+             <div className="mt-5">
+-              <LessonList items={video} locale={locale} />
++              <LessonList items={video} locale={locale} dict={dict} headingLevel={3} />
+             </div>
+           </section>
+         )}
+diff --git a/src/app/(site)/[locale]/search/page.tsx b/src/app/(site)/[locale]/search/page.tsx
+index af3b248..baf8469 100644
+--- a/src/app/(site)/[locale]/search/page.tsx
++++ b/src/app/(site)/[locale]/search/page.tsx
+@@ -1,36 +1,71 @@
+ import type { Metadata } from "next";
+ import Link from "next/link";
+ import { notFound } from "next/navigation";
++import { FilterForm } from "@/components/lessons/FilterForm";
++import { LessonList } from "@/components/lessons/LessonList";
++import { Pagination } from "@/components/lessons/Pagination";
+ import { SiteShell } from "@/components/layout/SiteShell";
+-import { searchLessons } from "@/lib/data/public";
++import { buildListHref, parseListParams } from "@/lib/content/list-params";
++import { getCategoryOptions, getLessonList } from "@/lib/data/lessons";
+ import { isLocale, localePath } from "@/lib/i18n/config";
+ import { getDictionary } from "@/lib/i18n/dictionaries";
+ 
+ export const dynamic = "force-dynamic";
+ 
+-export async function generateMetadata({ params }: { params: Promise<{ locale: string }> }): Promise<Metadata> {
++type Props = { params: Promise<{ locale: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> };
++
++export async function generateMetadata({ params }: Props): Promise<Metadata> {
+   const { locale } = await params;
+-  return isLocale(locale) ? { title: getDictionary(locale).nav.search, robots: { index: false, follow: true } } : {};
++  // Search result pages are not indexable (robots.txt also disallows them).
++  return isLocale(locale) ? { title: getDictionary(locale).lessons.searchTitle, robots: { index: false, follow: true } } : {};
+ }
+ 
+-export default async function SearchPage({ params, searchParams }: { params: Promise<{ locale: string }>; searchParams: Promise<{ q?: string }> }) {
+-  const [{ locale: raw }, query] = await Promise.all([params, searchParams]);
+-  if (!isLocale(raw)) notFound();
+-  const q = (query.q ?? "").trim().slice(0, 200);
+-  const results = q ? await searchLessons(raw, q) : [];
+-  const dict = getDictionary(raw);
+-  return <SiteShell locale={raw} path="/search"><section className="mx-auto max-w-4xl px-4 py-12 sm:px-6">
+-    <h1 className="text-3xl font-semibold text-deep">{dict.nav.search}</h1>
+-    <form action={localePath(raw, "/search")} method="get" role="search" className="mt-6 flex gap-2">
+-      <label className="sr-only" htmlFor="search-q">{dict.searchPlaceholder}</label>
+-      <input id="search-q" name="q" type="search" maxLength={200} defaultValue={q} placeholder={dict.searchPlaceholder} className="ui min-w-0 flex-1 rounded border border-rule bg-white px-4 py-3" />
+-      <button className="ui rounded bg-deep px-5 py-3 font-medium text-ivory" type="submit">{dict.searchButton}</button>
+-    </form>
+-    {q && <section className="mt-8" aria-live="polite"><h2 className="mb-4 text-lg font-semibold text-deep">{results.length ? `${results[0]?.total_count ?? 0} — ${q}` : q}</h2>
+-      {results.length ? <ul className="divide-y divide-rule border-y border-rule">{results.map((lesson) => <li key={lesson.id}>
+-        <Link className="group block py-5" href={localePath(raw, `/lessons/${lesson.slug}`)}><h3 className="text-xl font-semibold text-deep group-hover:underline">{lesson.title}</h3>
+-          {lesson.excerpt && <p className="mt-1 text-mute">{lesson.excerpt}</p>}</Link>
+-      </li>)}</ul> : <p className="rounded border border-dashed border-rule p-6 text-mute">{dict.home.noContentBody}</p>}
+-    </section>}
+-  </section></SiteShell>;
++export default async function SearchPage({ params, searchParams }: Props) {
++  const [{ locale }, raw] = await Promise.all([params, searchParams]);
++  if (!isLocale(locale)) notFound();
++  const dict = getDictionary(locale);
++  const p = parseListParams(raw);
++  const base = localePath(locale, "/search");
++
++  const categories = await getCategoryOptions(locale);
++  const categoryId = p.category ? (categories.find((c) => c.slug === p.category)?.id ?? null) : null;
++  const searched = p.q.length > 0;
++  const { items, total } = searched && !(p.category && !categoryId) ? await getLessonList(locale, p, categoryId) : { items: [], total: 0 };
++
++  return (
++    <SiteShell locale={locale} path="/search">
++      <section className="mx-auto max-w-4xl px-4 py-12 sm:px-6">
++        <h1 className="text-3xl font-semibold text-deep">{dict.lessons.searchTitle}</h1>
++        <div className="mt-6">
++          <FilterForm action={base} params={p} categories={categories} dict={dict} showSort={false} />
++        </div>
++
++        {!searched && <p className="mt-8 text-mute">{dict.lessons.searchPrompt}</p>}
++
++        {searched && (
++          <div className="mt-8">
++            <p className="ui text-sm text-mute" aria-live="polite">
++              {total} {dict.lessons.results} — <span dir="auto">{p.q}</span>
++            </p>
++            <p className="ui mt-1 text-sm">
++              <Link className="text-gold underline" href={buildListHref(base, { ...p, all: !p.all, page: 1 })}>
++                {p.all ? dict.lessons.searchThisLang : dict.lessons.searchAll}
++              </Link>
++            </p>
++            <div className="mt-4">
++              {items.length > 0 ? (
++                <LessonList items={items} locale={locale} dict={dict} showLocale={p.all} />
++              ) : (
++                <div className="rounded border border-dashed border-rule bg-parchment/40 p-8">
++                  <p className="font-semibold text-deep">{dict.lessons.noResultsTitle}</p>
++                  <p className="mt-1 text-mute">{dict.lessons.noResultsBody}</p>
++                </div>
++              )}
++            </div>
++            <Pagination base={base} params={p} total={total} dict={dict} />
++          </div>
++        )}
++      </section>
++    </SiteShell>
++  );
+ }
+diff --git a/src/app/sitemap.ts b/src/app/sitemap.ts
+index 349a46b..f80178d 100644
+--- a/src/app/sitemap.ts
++++ b/src/app/sitemap.ts
+@@ -1,20 +1,38 @@
+ import type { MetadataRoute } from "next";
+ import { getPublicLessonUrls } from "@/lib/data/public";
+-import { LOCALES, localePath } from "@/lib/i18n/config";
+ import { getPublicEnv } from "@/lib/env";
++import { LOCALES, localePath } from "@/lib/i18n/config";
++import { lessonPath } from "@/lib/seo/urls";
+ 
+ export const revalidate = 3600;
+ 
++/** Public, indexable URLs only: localized home + lesson index, and published translations with reciprocal alternates. */
+ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
+   const base = getPublicEnv().NEXT_PUBLIC_SITE_URL;
+-  const entries: MetadataRoute.Sitemap = LOCALES.map((locale) => ({ url: `${base}${localePath(locale)}`, changeFrequency: "weekly", priority: 1 }));
+-  for (const locale of LOCALES) entries.push({ url: `${base}${localePath(locale, "/lessons")}`, changeFrequency: "daily", priority: 0.8 });
+-  const lessons = await getPublicLessonUrls();
+-  for (const lesson of lessons) entries.push({
+-    url: `${base}${localePath(lesson.locale, `/lessons/${lesson.slug}`)}`,
+-    lastModified: new Date(lesson.updated_at),
+-    changeFrequency: "monthly",
+-    priority: 0.7,
+-  });
++  const abs = (p: string) => `${base}${p}`;
++  const languagesFor = (path: string) => ({ languages: Object.fromEntries(LOCALES.map((l) => [l, abs(localePath(l, path))])) });
++
++  const entries: MetadataRoute.Sitemap = [
++    ...LOCALES.map((l) => ({ url: abs(localePath(l)), changeFrequency: "weekly" as const, priority: 1, alternates: languagesFor("") })),
++    ...LOCALES.map((l) => ({ url: abs(localePath(l, "/lessons")), changeFrequency: "daily" as const, priority: 0.8, alternates: languagesFor("/lessons") })),
++  ];
++
++  const rows = await getPublicLessonUrls();
++  const byLesson = new Map<string, typeof rows>();
++  for (const r of rows) byLesson.set(r.lesson_id, [...(byLesson.get(r.lesson_id) ?? []), r]);
++
++  for (const group of byLesson.values()) {
++    // hreflang alternates list ONLY the translations that exist and are public.
++    const languages = Object.fromEntries(group.map((r) => [r.locale, abs(lessonPath(r.locale, r.slug))]));
++    for (const r of group) {
++      entries.push({
++        url: abs(lessonPath(r.locale, r.slug)),
++        lastModified: new Date(r.updated_at),
++        changeFrequency: "monthly",
++        priority: 0.7,
++        ...(group.length > 1 ? { alternates: { languages } } : {}),
++      });
++    }
++  }
+   return entries;
+ }
+diff --git a/src/components/lessons/Citations.tsx b/src/components/lessons/Citations.tsx
+new file mode 100644
+index 0000000..36a0261
+--- /dev/null
++++ b/src/components/lessons/Citations.tsx
+@@ -0,0 +1,76 @@
++import type { Citation } from "@/lib/data/lessons";
++import type { Dictionary } from "@/lib/i18n/dictionaries";
++
++/**
++ * Presents references exactly as stored. Nothing is inferred: a missing grade stays missing, an unverified
++ * reference is labelled as unverified, and a grade is always attributed to the named authority.
++ */
++export function Citations({ citations, dict }: { citations: Citation[]; dict: Dictionary }) {
++  if (citations.length === 0) return null;
++  const c = dict.citations;
++  return (
++    <section className="mt-12 border-t border-rule pt-6" aria-labelledby="sources-title">
++      <h2 id="sources-title" className="text-xl font-semibold text-deep">
++        {dict.lesson.sources}
++      </h2>
++      <ol className="mt-4 space-y-6">
++        {citations.map((s) => {
++          const locators: Array<[string, string | null]> = [
++            [c.volume, s.volume],
++            [c.page, s.page],
++            [c.chapter, s.chapter],
++            [c.hadithNumber, s.hadith_number],
++            [c.locator, s.edition_locator],
++          ];
++          const graded = s.authenticity_grade !== "unverified" && s.authenticity_grade !== "not_applicable";
++          return (
++            <li key={s.id} className="ps-1">
++              <p className="font-semibold text-deep" dir="auto">
++                {s.source_url ? (
++                  <a className="text-gold underline" href={s.source_url} rel="nofollow noopener noreferrer" target="_blank">
++                    {s.title}
++                  </a>
++                ) : (
++                  s.title
++                )}
++                {s.author_or_compiler && <span className="font-normal text-mute"> — {s.author_or_compiler}</span>}
++              </p>
++              {(s.edition || s.publisher || s.publication_year) && (
++                <p className="ui text-sm text-mute" dir="auto">
++                  {[s.edition && `${c.edition}: ${s.edition}`, s.publisher, s.publication_year].filter(Boolean).join(" · ")}
++                </p>
++              )}
++              {locators.some(([, v]) => v) && (
++                <p className="ui mt-1 text-sm" dir="auto">
++                  {locators.filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(" · ")}
++                </p>
++              )}
++              {s.quotation && (
++                <blockquote className="mt-2 border-s-4 border-rule ps-4 text-mute" dir="auto">
++                  {s.quotation}
++                </blockquote>
++              )}
++              {graded && (
++                <p className="ui mt-2 text-sm">
++                  <span className="font-medium">{c.grade}:</span> {c.grades[s.authenticity_grade]}
++                  {s.graded_by && (
++                    <>
++                      {" "}
++                      {c.gradedBy} <span dir="auto">{s.graded_by}</span>
++                    </>
++                  )}
++                </p>
++              )}
++              <p className={`ui mt-2 text-xs ${s.reference_verified ? "text-moss" : "text-danger"}`}>{s.reference_verified ? `✓ ${c.verified}` : c.unverified}</p>
++              {s.editorial_notes && (
++                <p className="ui mt-1 text-sm text-mute" dir="auto">
++                  {c.notes}: {s.editorial_notes}
++                </p>
++              )}
++            </li>
++          );
++        })}
++      </ol>
++    </section>
++  );
++}
+diff --git a/src/components/lessons/FilterForm.tsx b/src/components/lessons/FilterForm.tsx
+new file mode 100644
+index 0000000..c4885a2
+--- /dev/null
++++ b/src/components/lessons/FilterForm.tsx
+@@ -0,0 +1,79 @@
++import Link from "next/link";
++import { CONTENT_TYPES, hasActiveFilters, type ListParams } from "@/lib/content/list-params";
++import type { Dictionary } from "@/lib/i18n/dictionaries";
++
++const field = "ui w-full rounded border border-rule bg-white px-3 py-2";
++
++/** Plain GET form: filters live in the URL (shareable, works without JavaScript). */
++export function FilterForm({
++  action,
++  params,
++  categories,
++  dict,
++  showSort = true,
++}: {
++  action: string;
++  params: ListParams;
++  categories: Array<{ name: string; slug: string }>;
++  dict: Dictionary;
++  showSort?: boolean;
++}) {
++  return (
++    <form action={action} method="get" role="search" aria-label={dict.lessons.filters} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[2fr_1fr_1fr_1fr_auto]">
++      <div>
++        <label htmlFor="f-q" className="sr-only">
++          {dict.searchPlaceholder}
++        </label>
++        <input id="f-q" name="q" type="search" maxLength={200} defaultValue={params.q} placeholder={dict.searchPlaceholder} className={field} />
++      </div>
++      <div>
++        <label htmlFor="f-cat" className="sr-only">
++          {dict.lessons.category}
++        </label>
++        <select id="f-cat" name="category" defaultValue={params.category ?? ""} className={field}>
++          <option value="">{dict.lessons.allCategories}</option>
++          {categories.map((c) => (
++            <option key={c.slug} value={c.slug}>
++              {c.name}
++            </option>
++          ))}
++        </select>
++      </div>
++      <div>
++        <label htmlFor="f-type" className="sr-only">
++          {dict.lessons.type}
++        </label>
++        <select id="f-type" name="type" defaultValue={params.type ?? ""} className={field}>
++          <option value="">{dict.lessons.allTypes}</option>
++          {CONTENT_TYPES.map((t) => (
++            <option key={t} value={t}>
++              {dict.types[t]}
++            </option>
++          ))}
++        </select>
++      </div>
++      {showSort && (
++        <div>
++          <label htmlFor="f-sort" className="sr-only">
++            {dict.lessons.sort}
++          </label>
++          <select id="f-sort" name="sort" defaultValue={params.sort} className={field}>
++            <option value="new">{dict.lessons.newest}</option>
++            <option value="old">{dict.lessons.oldest}</option>
++          </select>
++        </div>
++      )}
++      {params.all && <input type="hidden" name="all" value="1" />}
++      <div className="flex gap-2">
++        <button type="submit" className="ui rounded bg-deep px-5 py-2 font-medium text-ivory hover:bg-moss">
++          {dict.lessons.apply}
++        </button>
++        {hasActiveFilters(params) && (
++          <Link href={action} className="ui rounded border border-rule px-4 py-2 text-sm leading-[1.9] hover:bg-parchment">
++            {dict.lessons.clear}
++          </Link>
++        )}
++      </div>
++    </form>
++  );
++}
+diff --git a/src/components/lessons/JsonLd.tsx b/src/components/lessons/JsonLd.tsx
+new file mode 100644
+index 0000000..49e4e02
+--- /dev/null
++++ b/src/components/lessons/JsonLd.tsx
+@@ -0,0 +1,6 @@
++import { safeJsonLd } from "@/lib/format";
++
++/** Structured data. Content is serialised with `<` escaped so it can never terminate the script element. */
++export function JsonLd({ data }: { data: Record<string, unknown> }) {
++  return <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: safeJsonLd(data) }} />;
++}
+diff --git a/src/components/lessons/LessonList.tsx b/src/components/lessons/LessonList.tsx
+new file mode 100644
+index 0000000..8d50136
+--- /dev/null
++++ b/src/components/lessons/LessonList.tsx
+@@ -0,0 +1,33 @@
++import Link from "next/link";
++import { formatDate } from "@/lib/format";
++import { LOCALE_META, localePath, type Locale } from "@/lib/i18n/config";
++import type { Dictionary } from "@/lib/i18n/dictionaries";
++import type { LessonListItem } from "@/types/db";
++
++/** Row list shared by the listing, search and home pages. `showLocale` marks results from other languages. */
++export function LessonList({ items, locale, dict, showLocale = false, headingLevel = 2 }: { items: LessonListItem[]; locale: Locale; dict: Dictionary; showLocale?: boolean; headingLevel?: 2 | 3 }) {
++  const H = headingLevel === 3 ? "h3" : "h2";
++  return (
++    <ul className="divide-y divide-rule border-y border-rule">
++      {items.map((l) => (
++        <li key={l.id}>
++          <Link href={localePath(l.locale, `/lessons/${l.slug}`)} hrefLang={l.locale} className="group block py-5">
++            <H className="text-xl font-semibold text-deep group-hover:underline" lang={l.locale} dir={LOCALE_META[l.locale].dir}>
++              {l.title}
++            </H>
++            {l.excerpt && (
++              <p className="mt-1 max-w-prose text-mute" lang={l.locale} dir={LOCALE_META[l.locale].dir}>
++                {l.excerpt}
++              </p>
++            )}
++            <p className="ui mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-mute">
++              <time dateTime={l.published_at}>{formatDate(l.published_at, locale)}</time>
++              {l.lessons?.content_type && l.lessons.content_type !== "article" && <span className="rounded bg-parchment px-2 py-0.5">{dict.types[l.lessons.content_type]}</span>}
++              {showLocale && <span className="rounded border border-rule px-2 py-0.5">{LOCALE_META[l.locale].nativeName}</span>}
++            </p>
++          </Link>
++        </li>
++      ))}
++    </ul>
++  );
++}
+diff --git a/src/components/lessons/MediaBlock.tsx b/src/components/lessons/MediaBlock.tsx
+new file mode 100644
+index 0000000..8725c6c
+--- /dev/null
++++ b/src/components/lessons/MediaBlock.tsx
+@@ -0,0 +1,47 @@
++import type { PublicMedia } from "@/lib/data/lessons";
++import type { Dictionary } from "@/lib/i18n/dictionaries";
++
++/** Audio files and approved video embeds attached to a lesson. Nothing is fetched until the reader interacts. */
++export function MediaBlock({ items, dict }: { items: PublicMedia[]; dict: Dictionary }) {
++  const playable = items.filter((m) => (m.kind === "audio" && m.url) || (m.kind === "video" && m.embedUrl));
++  if (playable.length === 0) return null;
++  return (
++    <section className="mt-10 space-y-8" aria-labelledby="media-title">
++      <h2 id="media-title" className="text-xl font-semibold text-deep">
++        {dict.lessons.media}
++      </h2>
++      {playable.map((m) => (
++        <figure key={m.id}>
++          {m.title && (
++            <figcaption className="ui mb-2 text-sm font-medium" dir="auto">
++              {m.title}
++            </figcaption>
++          )}
++          {m.kind === "audio" && m.url ? (
++            <audio controls preload="none" src={m.url} className="w-full" aria-label={m.title ?? dict.lessons.audioLabel} />
++          ) : (
++            m.embedUrl && (
++              <div className="aspect-video w-full overflow-hidden rounded bg-deep-2">
++                <iframe
++                  src={m.embedUrl}
++                  title={m.title ?? dict.lessons.videoLabel}
++                  loading="lazy"
++                  allow="fullscreen; picture-in-picture"
++                  allowFullScreen
++                  referrerPolicy="strict-origin-when-cross-origin"
++                  sandbox="allow-scripts allow-same-origin allow-presentation"
++                  className="h-full w-full border-0"
++                />
++              </div>
++            )
++          )}
++          {m.caption && (
++            <p className="ui mt-2 text-sm text-mute" dir="auto">
++              {m.caption}
++            </p>
++          )}
++        </figure>
++      ))}
++    </section>
++  );
++}
+diff --git a/src/components/lessons/Pagination.tsx b/src/components/lessons/Pagination.tsx
+new file mode 100644
+index 0000000..aaeb689
+--- /dev/null
++++ b/src/components/lessons/Pagination.tsx
+@@ -0,0 +1,31 @@
++import Link from "next/link";
++import { buildListHref, PAGE_SIZE, type ListParams } from "@/lib/content/list-params";
++import type { Dictionary } from "@/lib/i18n/dictionaries";
++
++export function Pagination({ base, params, total, dict }: { base: string; params: ListParams; total: number; dict: Dictionary }) {
++  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
++  if (pages <= 1) return null;
++  const { page } = params;
++  const link = "ui rounded border border-rule px-4 py-2 text-sm hover:bg-parchment";
++  return (
++    <nav aria-label={dict.lessons.pagination} className="mt-8 flex items-center justify-between gap-4">
++      {page > 1 ? (
++        <Link rel="prev" className={link} href={buildListHref(base, { ...params, page: page - 1 })}>
++          ← {dict.lessons.prev}
++        </Link>
++      ) : (
++        <span />
++      )}
++      <p className="ui text-sm text-mute" aria-current="page">
++        {dict.lessons.page} {page} {dict.lessons.of} {pages}
++      </p>
++      {page < pages ? (
++        <Link rel="next" className={link} href={buildListHref(base, { ...params, page: page + 1 })}>
++          {dict.lessons.next} →
++        </Link>
++      ) : (
++        <span />
++      )}
++    </nav>
++  );
++}
+diff --git a/src/components/lessons/PrintButton.tsx b/src/components/lessons/PrintButton.tsx
+new file mode 100644
+index 0000000..12736e9
+--- /dev/null
++++ b/src/components/lessons/PrintButton.tsx
+@@ -0,0 +1,9 @@
++"use client";
++
++export function PrintButton({ label }: { label: string }) {
++  return (
++    <button type="button" onClick={() => window.print()} className="ui rounded border border-rule px-3 py-1.5 text-sm hover:bg-parchment">
++      {label}
++    </button>
++  );
++}
+diff --git a/src/lib/content/list-params.ts b/src/lib/content/list-params.ts
+new file mode 100644
+index 0000000..4b5929a
+--- /dev/null
++++ b/src/lib/content/list-params.ts
+@@ -0,0 +1,53 @@
++import { isValidSlug } from "./slug";
++
++export const CONTENT_TYPES = ["article", "audio", "video", "book_commentary"] as const;
++export type ContentTypeValue = (typeof CONTENT_TYPES)[number];
++export const PAGE_SIZE = 12;
++export const MAX_PAGE = 500;
++
++export type SortOrder = "new" | "old";
++
++export interface ListParams {
++  q: string;
++  category: string | null; // category slug (localized)
++  type: ContentTypeValue | null;
++  sort: SortOrder;
++  page: number;
++  all: boolean; // search across all languages
++}
++
++type Raw = Record<string, string | string[] | undefined>;
++const first = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
++
++/** URL query strings are untrusted: every value is clamped/validated here, never passed through raw. */
++export function parseListParams(raw: Raw): ListParams {
++  const q = (first(raw.q) ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
++  const cat = first(raw.category) ?? "";
++  const type = first(raw.type) ?? "";
++  const page = Number.parseInt(first(raw.page) ?? "1", 10);
++  return {
++    q,
++    category: isValidSlug(cat) ? cat : null,
++    type: (CONTENT_TYPES as readonly string[]).includes(type) ? (type as ContentTypeValue) : null,
++    sort: first(raw.sort) === "old" ? "old" : "new",
++    page: Number.isFinite(page) ? Math.min(Math.max(page, 1), MAX_PAGE) : 1,
++    all: first(raw.all) === "1",
++  };
++}
++
++/** Builds a listing URL containing only non-default parameters. */
++export function buildListHref(base: string, p: Partial<ListParams>): string {
++  const sp = new URLSearchParams();
++  if (p.q) sp.set("q", p.q);
++  if (p.category) sp.set("category", p.category);
++  if (p.type) sp.set("type", p.type);
++  if (p.sort === "old") sp.set("sort", "old");
++  if (p.all) sp.set("all", "1");
++  if (p.page && p.page > 1) sp.set("page", String(p.page));
++  const qs = sp.toString();
++  return qs ? `${base}?${qs}` : base;
++}
++
++export function hasActiveFilters(p: ListParams): boolean {
++  return Boolean(p.q || p.category || p.type || p.sort === "old" || p.all);
++}
+diff --git a/src/lib/content/render-document.tsx b/src/lib/content/render-document.tsx
+index df8dbc0..8ef3e91 100644
+--- a/src/lib/content/render-document.tsx
++++ b/src/lib/content/render-document.tsx
+@@ -1,9 +1,41 @@
+ import type { ReactNode } from "react";
+ import { validateDocument } from "@/lib/content/document";
++import type { Dictionary } from "@/lib/i18n/dictionaries";
++import type { PublicMedia } from "@/lib/data/lessons";
+ 
+ type Node = { type?: string; text?: string; marks?: Array<{ type: string; attrs?: Record<string, string | null> }>; attrs?: Record<string, unknown>; content?: Node[] };
+ 
+-function renderNode(node: Node, key: string): ReactNode {
++export interface RenderContext {
++  /** Needed to label quote blocks (Qur'an / Hadith / ...). Without it blocks render unlabeled. */
++  dict?: Dictionary;
++  /** Resolved public media keyed by id, for `mediaRef` nodes. Unresolved refs render nothing (never a broken/private URL). */
++  media?: Record<string, PublicMedia>;
++}
++
++const QUOTE_STYLE: Record<string, string> = {
++  quran: "border-gold bg-parchment/60 text-ink text-xl",
++  hadith: "border-moss bg-parchment/40 text-ink text-xl",
++  translation: "border-rule text-ink",
++  commentary: "border-rule text-mute",
++  scholar_quote: "border-moss/60 text-mute",
++  author_note: "border-gold-bright text-mute",
++  editorial_note: "border-danger/50 bg-danger/5 text-mute text-sm",
++};
++
++/** Collects every mediaRef id so the caller can fetch them in one query. */
++export function collectMediaIds(value: unknown): string[] {
++  const parsed = validateDocument(value);
++  if (!parsed.ok) return [];
++  const ids = new Set<string>();
++  const walk = (n: Node) => {
++    if (n.type === "mediaRef" && typeof n.attrs?.mediaId === "string") ids.add(n.attrs.mediaId);
++    n.content?.forEach(walk);
++  };
++  walk(parsed.doc as Node);
++  return [...ids];
++}
++
++function renderNode(node: Node, key: string, ctx: RenderContext): ReactNode {
+   if (node.type === "text") {
+     let text: ReactNode = node.text ?? "";
+     for (const mark of [...(node.marks ?? [])].reverse()) {
+@@ -12,42 +44,101 @@ function renderNode(node: Node, key: string): ReactNode {
+       else if (mark.type === "link" && mark.attrs?.href) {
+         const href = mark.attrs.href;
+         const external = /^https?:\/\//i.test(href);
+-        text = <a key={`${key}-link`} href={href} className="text-gold underline" rel={external ? "nofollow noopener noreferrer" : undefined} target={external ? "_blank" : undefined}>{text}</a>;
++        text = (
++          <a key={`${key}-link`} href={href} className="text-gold underline" rel={external ? "nofollow noopener noreferrer" : undefined} target={external ? "_blank" : undefined}>
++            {text}
++          </a>
++        );
+       }
+     }
+     return text;
+   }
+-  const children = node.content?.map((child, i) => renderNode(child, `${key}-${i}`));
++  const children = node.content?.map((child, i) => renderNode(child, `${key}-${i}`, ctx));
+   const language = typeof node.attrs?.lang === "string" ? node.attrs.lang : undefined;
+-  const direction = node.attrs?.dir === "rtl" || node.attrs?.dir === "ltr" ? node.attrs.dir : undefined;
++  // Mixed-script content: when the author did not set a direction, let the browser decide from the first strong character
++  // (an Arabic paragraph inside a Hausa lesson then renders right-to-left, a Hausa paragraph left-to-right).
++  const direction = node.attrs?.dir === "rtl" || node.attrs?.dir === "ltr" ? node.attrs.dir : "auto";
+   const attrs = { lang: language, dir: direction };
+   switch (node.type) {
+-    case "doc": return <>{children}</>;
+-    case "paragraph": return <p key={key} {...attrs} className="my-5 leading-8">{children}</p>;
++    case "doc":
++      return <>{children}</>;
++    case "paragraph":
++      return (
++        <p key={key} {...attrs} className="my-5 leading-8">
++          {children}
++        </p>
++      );
+     case "heading": {
+       const level = Math.min(4, Math.max(2, Number(node.attrs?.level ?? 2)));
+       if (level === 2) return <h2 key={key} {...attrs} className="mt-10 text-2xl font-semibold text-deep">{children}</h2>;
+       if (level === 3) return <h3 key={key} {...attrs} className="mt-8 text-xl font-semibold text-deep">{children}</h3>;
+       return <h4 key={key} {...attrs} className="mt-6 text-lg font-semibold text-deep">{children}</h4>;
+     }
+-    case "bulletList": return <ul key={key} className="my-5 list-disc space-y-2 ps-7">{children}</ul>;
+-    case "orderedList": return <ol key={key} className="my-5 list-decimal space-y-2 ps-7">{children}</ol>;
+-    case "listItem": return <li key={key}>{children}</li>;
+-    case "blockquote": return <blockquote key={key} {...attrs} className={`my-6 border-s-4 border-gold ps-5 text-mute ${node.attrs?.kind === "quran" || node.attrs?.kind === "hadith" ? "text-center text-xl" : ""}`}>{children}</blockquote>;
+-    case "horizontalRule": return <hr key={key} className="my-8 border-rule" />;
+-    case "table": return <div key={key} className="my-6 overflow-x-auto"><table className="w-full border-collapse">{children}</table></div>;
+-    case "tableRow": return <tr key={key} className="border-b border-rule">{children}</tr>;
+-    case "tableHeader": return <th key={key} className="border border-rule bg-parchment p-2 text-start font-semibold">{children}</th>;
+-    case "tableCell": return <td key={key} className="border border-rule p-2">{children}</td>;
+-    case "mediaRef": return null;
+-    case "hardBreak": return <br key={key} />;
+-    default: return <span key={key}>{children}</span>;
++    case "bulletList":
++      return <ul key={key} className="my-5 list-disc space-y-2 ps-7">{children}</ul>;
++    case "orderedList":
++      return <ol key={key} className="my-5 list-decimal space-y-2 ps-7">{children}</ol>;
++    case "listItem":
++      return <li key={key}>{children}</li>;
++    case "blockquote": {
++      const kind = typeof node.attrs?.kind === "string" ? node.attrs.kind : null;
++      const label = kind && ctx.dict ? (ctx.dict.quoteKinds as Record<string, string>)[kind] : null;
++      return (
++        <blockquote key={key} {...attrs} data-kind={kind ?? undefined} className={`my-6 border-s-4 ps-5 pe-3 py-1 ${kind ? (QUOTE_STYLE[kind] ?? "border-gold text-mute") : "border-gold text-mute"}`}>
++          {label && <p className="ui !my-1 text-xs font-semibold tracking-wide text-gold" dir="auto">{label}</p>}
++          {children}
++        </blockquote>
++      );
++    }
++    case "horizontalRule":
++      return <hr key={key} className="my-8 border-rule" />;
++    case "table":
++      return (
++        <div key={key} className="my-6 overflow-x-auto">
++          <table className="w-full border-collapse">{children}</table>
++        </div>
++      );
++    case "tableRow":
++      return <tr key={key} className="border-b border-rule">{children}</tr>;
++    case "tableHeader":
++      return <th key={key} scope="col" className="border border-rule bg-parchment p-2 text-start font-semibold">{children}</th>;
++    case "tableCell":
++      return <td key={key} className="border border-rule p-2">{children}</td>;
++    case "mediaRef": {
++      const m = typeof node.attrs?.mediaId === "string" ? ctx.media?.[node.attrs.mediaId] : undefined;
++      const caption = (typeof node.attrs?.caption === "string" && node.attrs.caption) || m?.caption || null;
++      if (!m) return null;
++      if (m.kind === "image" && m.url) {
++        return (
++          <figure key={key} className="my-6">
++            {/* eslint-disable-next-line @next/next/no-img-element -- storage CDN asset with stored dimensions */}
++            <img src={m.url} alt={m.alt_text ?? ""} width={m.width ?? undefined} height={m.height ?? undefined} loading="lazy" decoding="async" className="h-auto max-w-full rounded" />
++            {caption && <figcaption className="ui mt-2 text-sm text-mute">{caption}</figcaption>}
++          </figure>
++        );
++      }
++      if (m.kind === "audio" && m.url) {
++        return (
++          <figure key={key} className="my-6">
++            {m.title && <figcaption className="ui mb-2 text-sm font-medium">{m.title}</figcaption>}
++            {/* preload="none": a large audio file is not downloaded until the reader presses play */}
++            <audio controls preload="none" src={m.url} className="w-full" />
++            {caption && <p className="ui mt-2 text-sm text-mute">{caption}</p>}
++          </figure>
++        );
++      }
++      return null;
++    }
++    case "hardBreak":
++      return <br key={key} />;
++    default:
++      return <span key={key}>{children}</span>;
+   }
+ }
+ 
+ /** Render the stored ProseMirror subset as React nodes; never inject HTML from lesson content. */
+-export function renderDocument(value: unknown): ReactNode {
++export function renderDocument(value: unknown, ctx: RenderContext = {}): ReactNode {
+   const parsed = validateDocument(value);
+   if (!parsed.ok) return null;
+-  return renderNode(parsed.doc, "root");
++  return renderNode(parsed.doc, "root", ctx);
+ }
+diff --git a/src/lib/data/lessons.ts b/src/lib/data/lessons.ts
+new file mode 100644
+index 0000000..0125ae9
+--- /dev/null
++++ b/src/lib/data/lessons.ts
+@@ -0,0 +1,338 @@
++import { cache } from "react";
++import { getPublicEnv } from "@/lib/env";
++import { PAGE_SIZE, type ListParams } from "@/lib/content/list-params";
++import type { Locale } from "@/lib/i18n/config";
++import { createPublicClient } from "@/lib/supabase/public";
++import type { ContentType, LessonListItem } from "@/types/db";
++
++/**
++ * Richer public reads used by the lesson, listing and search pages.
++ * Everything runs as the anonymous role, so RLS - not this code - guarantees drafts, scheduled items and
++ * unpublished translations are never returned. Failure policy matches src/lib/data/public.ts.
++ */
++function fail(where: string, message: string): void {
++  if (process.env.NEXT_PHASE === "phase-production-build") {
++    console.error(`[data] ${where} failed during build (empty state used): ${message}`);
++    return;
++  }
++  throw new Error(`[data] ${where} failed: ${message}`);
++}
++const nowIso = () => new Date().toISOString();
++
++// ---------------------------------------------------------------- lesson page
++export interface LessonDetail {
++  id: string;
++  lesson_id: string;
++  locale: Locale;
++  slug: string;
++  title: string;
++  excerpt: string | null;
++  body: unknown;
++  seo_title: string | null;
++  seo_description: string | null;
++  published_at: string;
++  updated_at: string;
++  kind: "original" | "translation";
++  translator_name: string | null;
++  review_status: "unreviewed" | "reviewed";
++  content_type: ContentType;
++  original_locale: Locale;
++  author_name: string | null;
++}
++
++export const getLessonDetail = cache(async (locale: Locale, slug: string): Promise<LessonDetail | null> => {
++  const supabase = createPublicClient();
++  const { data, error } = await supabase
++    .from("lesson_translations")
++    .select(
++      "id, lesson_id, locale, slug, title, excerpt, body, seo_title, seo_description, published_at, updated_at, kind, translator_name, review_status, lessons!inner(content_type, original_locale, author_id)",
++    )
++    .eq("locale", locale)
++    .eq("slug", slug)
++    .eq("status", "published")
++    .lte("published_at", nowIso())
++    .maybeSingle();
++  if (error) {
++    fail("getLessonDetail", error.message);
++    return null;
++  }
++  if (!data) return null;
++  const row = data as unknown as Omit<LessonDetail, "content_type" | "original_locale" | "author_name"> & {
++    lessons: { content_type: ContentType; original_locale: Locale; author_id: string | null };
++  };
++  const { lessons, ...rest } = row;
++  let author_name: string | null = null;
++  if (lessons.author_id) {
++    const { data: a } = await supabase
++      .from("author_profile_translations")
++      .select("display_name, locale")
++      .eq("author_id", lessons.author_id);
++    const names = (a ?? []) as Array<{ display_name: string; locale: Locale }>;
++    author_name = (names.find((n) => n.locale === locale) ?? names.find((n) => n.locale === lessons.original_locale) ?? names[0])?.display_name ?? null;
++  }
++  return { ...rest, content_type: lessons.content_type, original_locale: lessons.original_locale, author_name };
++});
++
++/** Slug-change redirects recorded by the database trigger. Only same-site, locale-prefixed targets are honoured. */
++export async function getRedirectTarget(fromPath: string): Promise<string | null> {
++  const supabase = createPublicClient();
++  const { data, error } = await supabase.from("url_redirects").select("to_path").eq("from_path", fromPath).maybeSingle();
++  if (error) {
++    fail("getRedirectTarget", error.message);
++    return null;
++  }
++  const to = (data as { to_path?: string } | null)?.to_path;
++  return to && /^\/(ha|ar|en)\/[a-z0-9/_-]*$/.test(to) ? to : null;
++}
++
++export interface Taxonomy {
++  categories: Array<{ name: string; slug: string }>;
++  tags: Array<{ name: string }>;
++}
++
++export async function getLessonTaxonomy(lessonId: string, locale: Locale): Promise<Taxonomy> {
++  const supabase = createPublicClient();
++  const [cats, tags] = await Promise.all([
++    supabase.from("lesson_categories").select("categories!inner(category_translations(locale, name, slug))").eq("lesson_id", lessonId),
++    supabase.from("lesson_tags").select("tags!inner(tag_translations(locale, name))").eq("lesson_id", lessonId),
++  ]);
++  if (cats.error) fail("getLessonTaxonomy.categories", cats.error.message);
++  if (tags.error) fail("getLessonTaxonomy.tags", tags.error.message);
++  type C = { categories: { category_translations: Array<{ locale: Locale; name: string; slug: string }> } };
++  type T = { tags: { tag_translations: Array<{ locale: Locale; name: string }> } };
++  return {
++    categories: ((cats.data ?? []) as unknown as C[]).flatMap((r) => r.categories.category_translations.filter((t) => t.locale === locale).map((t) => ({ name: t.name, slug: t.slug }))),
++    tags: ((tags.data ?? []) as unknown as T[]).flatMap((r) => r.tags.tag_translations.filter((t) => t.locale === locale).map((t) => ({ name: t.name }))),
++  };
++}
++
++export interface Citation {
++  id: string;
++  title: string;
++  author_or_compiler: string | null;
++  edition: string | null;
++  publisher: string | null;
++  publication_year: number | null;
++  source_url: string | null;
++  volume: string | null;
++  page: string | null;
++  chapter: string | null;
++  hadith_number: string | null;
++  edition_locator: string | null;
++  quotation: string | null;
++  authenticity_grade: "unverified" | "not_applicable" | "sahih" | "hasan" | "daif" | "mawdu";
++  graded_by: string | null;
++  reference_verified: boolean;
++  editorial_notes: string | null;
++}
++
++export async function getCitations(lessonId: string): Promise<Citation[]> {
++  const supabase = createPublicClient();
++  const { data, error } = await supabase
++    .from("lesson_sources")
++    .select(
++      "id, volume, page, chapter, hadith_number, edition_locator, quotation, authenticity_grade, graded_by, reference_verified, editorial_notes, sort_order, sources!inner(title, author_or_compiler, edition, publisher, publication_year, source_url)",
++    )
++    .eq("lesson_id", lessonId)
++    .order("sort_order", { ascending: true });
++  if (error) {
++    fail("getCitations", error.message);
++    return [];
++  }
++  return ((data ?? []) as unknown as Array<Record<string, unknown> & { sources: Record<string, unknown> }>).map((row) => {
++    const { sources, sort_order: _ignored, ...cite } = row;
++    void _ignored;
++    return { ...sources, ...cite } as unknown as Citation;
++  });
++}
++
++// ---------------------------------------------------------------------- media
++export interface PublicMedia {
++  id: string;
++  kind: "image" | "audio" | "video" | "document";
++  url: string | null; // storage-backed files
++  embedUrl: string | null; // validated video provider embed
++  mime_type: string | null;
++  width: number | null;
++  height: number | null;
++  duration_seconds: number | null;
++  title: string | null;
++  alt_text: string | null;
++  caption: string | null;
++}
++
++type MediaRow = {
++  id: string;
++  kind: PublicMedia["kind"];
++  public_path: string | null;
++  external_provider: string | null;
++  external_id: string | null;
++  mime_type: string | null;
++  width: number | null;
++  height: number | null;
++  duration_seconds: number | null;
++  media_asset_translations: Array<{ locale: Locale; title: string | null; alt_text: string | null; caption: string | null }>;
++};
++
++const MEDIA_SELECT = "id, kind, public_path, external_provider, external_id, mime_type, width, height, duration_seconds, media_asset_translations(locale, title, alt_text, caption)";
++
++function toPublicMedia(row: MediaRow, locale: Locale, embedFor: (p: string, id: string) => string | null): PublicMedia {
++  const tr = row.media_asset_translations.find((t) => t.locale === locale) ?? row.media_asset_translations[0];
++  const base = getPublicEnv().NEXT_PUBLIC_SUPABASE_URL;
++  return {
++    id: row.id,
++    kind: row.kind,
++    url: row.public_path ? `${base}/storage/v1/object/public/media-public/${row.public_path.split("/").map(encodeURIComponent).join("/")}` : null,
++    embedUrl: row.external_provider && row.external_id ? embedFor(row.external_provider, row.external_id) : null,
++    mime_type: row.mime_type,
++    width: row.width,
++    height: row.height,
++    duration_seconds: row.duration_seconds,
++    title: tr?.title ?? null,
++    alt_text: tr?.alt_text ?? null,
++    caption: tr?.caption ?? null,
++  };
++}
++
++export async function getMediaByIds(ids: string[], locale: Locale): Promise<Record<string, PublicMedia>> {
++  if (ids.length === 0) return {};
++  const { embedUrlFor } = await import("@/lib/security/embed");
++  const supabase = createPublicClient();
++  const { data, error } = await supabase.from("media_assets").select(MEDIA_SELECT).in("id", ids.slice(0, 100));
++  if (error) {
++    fail("getMediaByIds", error.message);
++    return {};
++  }
++  return Object.fromEntries(((data ?? []) as unknown as MediaRow[]).map((r) => [r.id, toPublicMedia(r, locale, embedUrlFor)]));
++}
++
++/** Audio / video / attachments explicitly attached to a lesson (not inline in the body). */
++export async function getLessonMedia(lessonId: string, locale: Locale): Promise<PublicMedia[]> {
++  const { embedUrlFor } = await import("@/lib/security/embed");
++  const supabase = createPublicClient();
++  const { data, error } = await supabase
++    .from("lesson_media")
++    .select(`role, locale, sort_order, media_assets!inner(${MEDIA_SELECT})`)
++    .eq("lesson_id", lessonId)
++    .in("role", ["audio", "video"])
++    .order("sort_order", { ascending: true });
++  if (error) {
++    fail("getLessonMedia", error.message);
++    return [];
++  }
++  return ((data ?? []) as unknown as Array<{ locale: Locale | null; media_assets: MediaRow }>)
++    .filter((r) => r.locale === null || r.locale === locale)
++    .map((r) => toPublicMedia(r.media_assets, locale, embedUrlFor));
++}
++
++// -------------------------------------------------------------------- related
++export async function getRelatedLessons(lessonId: string, locale: Locale, limit = 4): Promise<LessonListItem[]> {
++  const supabase = createPublicClient();
++  const rel = await supabase.from("related_lessons").select("related_lesson_id, sort_order").eq("lesson_id", lessonId).order("sort_order", { ascending: true });
++  if (rel.error) {
++    fail("getRelatedLessons", rel.error.message);
++    return [];
++  }
++  let ids = ((rel.data ?? []) as Array<{ related_lesson_id: string }>).map((r) => r.related_lesson_id);
++  if (ids.length === 0) {
++    // Fallback: other lessons in the same subject(s).
++    const cats = await supabase.from("lesson_categories").select("category_id").eq("lesson_id", lessonId);
++    const catIds = ((cats.data ?? []) as Array<{ category_id: string }>).map((c) => c.category_id);
++    if (catIds.length === 0) return [];
++    const same = await supabase.from("lesson_categories").select("lesson_id").in("category_id", catIds).neq("lesson_id", lessonId).limit(40);
++    ids = [...new Set(((same.data ?? []) as Array<{ lesson_id: string }>).map((r) => r.lesson_id))];
++  }
++  if (ids.length === 0) return [];
++  const { data, error } = await supabase
++    .from("lesson_translations")
++    .select("id, lesson_id, locale, slug, title, excerpt, published_at, lessons!inner(content_type)")
++    .in("lesson_id", ids)
++    .eq("locale", locale)
++    .eq("status", "published")
++    .lte("published_at", nowIso())
++    .order("published_at", { ascending: false })
++    .limit(limit);
++  if (error) {
++    fail("getRelatedLessons.items", error.message);
++    return [];
++  }
++  return (data ?? []) as unknown as LessonListItem[];
++}
++
++// ----------------------------------------------------------- listing & search
++export interface ListResult {
++  items: LessonListItem[];
++  total: number;
++}
++
++export async function getCategoryOptions(locale: Locale): Promise<Array<{ id: string; name: string; slug: string }>> {
++  const supabase = createPublicClient();
++  const { data, error } = await supabase
++    .from("category_translations")
++    .select("category_id, name, slug, categories!inner(sort_order)")
++    .eq("locale", locale)
++    .order("sort_order", { referencedTable: "categories", ascending: true });
++  if (error) {
++    fail("getCategoryOptions", error.message);
++    return [];
++  }
++  return ((data ?? []) as unknown as Array<{ category_id: string; name: string; slug: string }>).map((c) => ({ id: c.category_id, name: c.name, slug: c.slug }));
++}
++
++/**
++ * Listing + search in one place.
++ *  - with `q`: PostgreSQL full-text search RPC (Hausa/Arabic/English folding), ranked.
++ *  - without `q`: chronological browse with optional category/type filters.
++ */
++export async function getLessonList(locale: Locale, p: ListParams, categoryId: string | null): Promise<ListResult> {
++  const supabase = createPublicClient();
++  const from = (p.page - 1) * PAGE_SIZE;
++
++  if (p.q) {
++    const { data, error } = await supabase.rpc("search_lessons", {
++      q: p.q,
++      p_locale: p.all ? null : locale,
++      p_content_type: p.type,
++      p_category_id: categoryId,
++      p_limit: PAGE_SIZE,
++      p_offset: from,
++    });
++    if (error) {
++      fail("getLessonList.search", error.message);
++      return { items: [], total: 0 };
++    }
++    const rows = (data ?? []) as Array<{ translation_id: string; lesson_id: string; locale: Locale; slug: string; title: string; excerpt: string | null; published_at: string; content_type: ContentType; total_count: number }>;
++    return {
++      total: Number(rows[0]?.total_count ?? 0),
++      items: rows.map((r) => ({ id: r.translation_id, lesson_id: r.lesson_id, locale: r.locale, slug: r.slug, title: r.title, excerpt: r.excerpt, published_at: r.published_at, lessons: { content_type: r.content_type } })),
++    };
++  }
++
++  const embed = categoryId ? "lessons!inner(content_type, lesson_categories!inner(category_id))" : "lessons!inner(content_type)";
++  const columns = `id, lesson_id, locale, slug, title, excerpt, published_at, ${embed}`;
++  const base = (head: boolean) => {
++    let q = supabase
++      .from("lesson_translations")
++      .select(columns, { count: "exact", head })
++      .eq("locale", locale)
++      .eq("status", "published")
++      .lte("published_at", nowIso());
++    if (p.type) q = q.eq("lessons.content_type", p.type);
++    if (categoryId) q = q.eq("lessons.lesson_categories.category_id", categoryId);
++    return q;
++  };
++  const { data, error, count, status } = await base(false)
++    .order("published_at", { ascending: p.sort === "old" })
++    .range(from, from + PAGE_SIZE - 1);
++  if (error) {
++    // HTTP 416 / PGRST103: the requested page is beyond the last row. Not a failure: report the real total so the page can
++    // clamp. Detected by status code because some PostgREST versions return a truncated error body.
++    if (status === 416 || error.code === "PGRST103") {
++      const head = await base(true);
++      if (!head.error) return { items: [], total: head.count ?? 0 };
++    }
++    fail("getLessonList", error.message);
++    return { items: [], total: 0 };
++  }
++  return { items: (data ?? []) as unknown as LessonListItem[], total: count ?? 0 };
++}
+diff --git a/src/lib/data/public.ts b/src/lib/data/public.ts
+index 431f5b4..2516ec6 100644
+--- a/src/lib/data/public.ts
++++ b/src/lib/data/public.ts
+@@ -205,19 +205,19 @@ export async function searchLessons(locale: Locale, query: string, opts: { limit
+   })) as SearchResult[];
+ }
+ 
+-export async function getPublicLessonUrls(): Promise<Array<{ locale: Locale; slug: string; updated_at: string }>> {
++export async function getPublicLessonUrls(): Promise<Array<{ lesson_id: string; locale: Locale; slug: string; updated_at: string }>> {
+   const supabase = createPublicClient();
+   const pageSize = 1000;
+-  const all: Array<{ locale: Locale; slug: string; updated_at: string }> = [];
++  const all: Array<{ lesson_id: string; locale: Locale; slug: string; updated_at: string }> = [];
+   for (let offset = 0; ; offset += pageSize) {
+-    const { data, error } = await supabase.from("lesson_translations").select("locale, slug, updated_at")
++    const { data, error } = await supabase.from("lesson_translations").select("lesson_id, locale, slug, updated_at")
+       .eq("status", "published").lte("published_at", new Date().toISOString())
+       .order("updated_at", { ascending: false }).range(offset, offset + pageSize - 1);
+     if (error) {
+       failSoft("getPublicLessonUrls", error.message);
+       return [];
+     }
+-    all.push(...(data ?? []) as Array<{ locale: Locale; slug: string; updated_at: string }>);
++    all.push(...(data ?? []) as Array<{ lesson_id: string; locale: Locale; slug: string; updated_at: string }>);
+     if ((data?.length ?? 0) < pageSize) return all;
+   }
+ }
+diff --git a/src/lib/format.ts b/src/lib/format.ts
+new file mode 100644
+index 0000000..489db08
+--- /dev/null
++++ b/src/lib/format.ts
+@@ -0,0 +1,19 @@
++import type { Locale } from "@/lib/i18n/config";
++
++const INTL_TAG: Record<Locale, string> = { ha: "ha-NG", ar: "ar", en: "en" };
++
++/** Date shown to readers. UTC so the same date renders on server and client regardless of timezone. */
++export function formatDate(iso: string, locale: Locale): string {
++  const d = new Date(iso);
++  if (Number.isNaN(d.getTime())) return "";
++  try {
++    return new Intl.DateTimeFormat(INTL_TAG[locale], { dateStyle: "long", timeZone: "UTC" }).format(d);
++  } catch {
++    return d.toISOString().slice(0, 10);
++  }
++}
++
++/** JSON-LD must not be able to close its <script> tag. */
++export function safeJsonLd(data: unknown): string {
++  return JSON.stringify(data).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
++}
+diff --git a/src/lib/i18n/dictionaries.ts b/src/lib/i18n/dictionaries.ts
+index ba166c3..f131b95 100644
+--- a/src/lib/i18n/dictionaries.ts
++++ b/src/lib/i18n/dictionaries.ts
+@@ -18,6 +18,21 @@ export type Dictionary = {
+   home: { latest: string; categories: string; viewAll: string; noContentTitle: string; noContentBody: string };
+   lesson: { published: string; updated: string; sources: string; related: string; availableIn: string; print: string };
+   notFound: { title: string; body: string; back: string };
++  lessons: {
++    title: string; breadcrumbHome: string; filters: string; category: string; allCategories: string; type: string; allTypes: string;
++    sort: string; newest: string; oldest: string; apply: string; clear: string; results: string; page: string; of: string;
++    prev: string; next: string; pagination: string; noResultsTitle: string; noResultsBody: string; readMore: string;
++    searchTitle: string; searchPrompt: string; searchAll: string; searchThisLang: string;
++    share: string; shareVia: string; categoriesLabel: string; tagsLabel: string; translatedBy: string; translationReviewed: string;
++    translationUnreviewed: string; originalLanguage: string; media: string; audioLabel: string; videoLabel: string;
++  };
++  types: { article: string; audio: string; video: string; book_commentary: string };
++  quoteKinds: { quran: string; hadith: string; translation: string; commentary: string; scholar_quote: string; author_note: string; editorial_note: string };
++  citations: {
++    verified: string; unverified: string; grade: string; gradedBy: string; volume: string; page: string; chapter: string;
++    hadithNumber: string; locator: string; edition: string; quotation: string; notes: string;
++    grades: { unverified: string; not_applicable: string; sahih: string; hasan: string; daif: string; mawdu: string };
++  };
+ };
+ 
+ const ha: Dictionary = {
+@@ -34,6 +49,21 @@ const ha: Dictionary = {
+   home: { latest: "Sababbin darussa", categories: "Fannonin ilimi", viewAll: "Duba duka", noContentTitle: "Ba a riga an wallafa darasi ba", noContentBody: "Za a ga darussan da aka wallafa a nan." },
+   lesson: { published: "An wallafa", updated: "An sabunta", sources: "Majiyoyi", related: "Darussa masu alaƙa", availableIn: "Ana samun wannan darasi a", print: "Buga" },
+   notFound: { title: "Ba a sami shafin ba", body: "Shafin da kake nema babu shi, ko kuma an cire shi.", back: "Koma shafin farko" },
++  lessons: {
++    title: "Darussa", breadcrumbHome: "Farko", filters: "Tace darussa", category: "Fanni", allCategories: "Dukkan fannoni", type: "Nau'i", allTypes: "Dukkan nau'o'i",
++    sort: "Tsari", newest: "Sababbi da farko", oldest: "Tsofaffi da farko", apply: "Tace", clear: "Share tacewa", results: "sakamako", page: "Shafi", of: "cikin",
++    prev: "Na baya", next: "Na gaba", pagination: "Shafukan sakamako", noResultsTitle: "Ba a sami komai ba", noResultsBody: "Gwada wata kalma daban ko ka cire tacewa.", readMore: "Karanta darasi",
++    searchTitle: "Bincike", searchPrompt: "Rubuta kalmar da kake nema.", searchAll: "Bincika a dukkan harsuna", searchThisLang: "Bincika a wannan harshe kawai",
++    share: "Raba", shareVia: "Raba ta", categoriesLabel: "Fannoni", tagsLabel: "Alamomi", translatedBy: "Mai fassara", translationReviewed: "An duba wannan fassara",
++    translationUnreviewed: "Ba a duba wannan fassara ba tukuna", originalLanguage: "Harshen asali", media: "Sauti da bidiyo", audioLabel: "Sauti", videoLabel: "Bidiyo",
++  },
++  types: { article: "Rubutu", audio: "Sauti", video: "Bidiyo", book_commentary: "Sharhin littafi" },
++  quoteKinds: { quran: "Ayar Alƙur'ani", hadith: "Hadisi", translation: "Fassara", commentary: "Sharhi", scholar_quote: "Maganar malami", author_note: "Bayanin marubuci", editorial_note: "Bayanin edita" },
++  citations: {
++    verified: "An tabbatar da madogarar", unverified: "Ba a tabbatar da wannan madogara ba tukuna", grade: "Darajar hadisi", gradedBy: "bisa ga", volume: "Juzu'i", page: "Shafi", chapter: "Babi",
++    hadithNumber: "Lambar hadisi", locator: "Wuri a bugun", edition: "Bugu", quotation: "Abin da aka ɗauko", notes: "Bayanin edita",
++    grades: { unverified: "Ba a tabbatar ba", not_applicable: "Ba ya buƙata", sahih: "Sahih", hasan: "Hasan", daif: "Mai rauni (Da'if)", mawdu: "Ƙirƙirarre (Mawdu')" },
++  },
+ };
+ 
+ const en: Dictionary = {
+@@ -50,6 +80,21 @@ const en: Dictionary = {
+   home: { latest: "Latest lessons", categories: "Subjects", viewAll: "View all", noContentTitle: "No lessons published yet", noContentBody: "Published lessons will appear here." },
+   lesson: { published: "Published", updated: "Updated", sources: "Sources", related: "Related lessons", availableIn: "This lesson is also available in", print: "Print" },
+   notFound: { title: "Page not found", body: "The page you are looking for does not exist or has been removed.", back: "Back to home" },
++  lessons: {
++    title: "Lessons", breadcrumbHome: "Home", filters: "Filter lessons", category: "Subject", allCategories: "All subjects", type: "Type", allTypes: "All types",
++    sort: "Order", newest: "Newest first", oldest: "Oldest first", apply: "Apply", clear: "Clear filters", results: "results", page: "Page", of: "of",
++    prev: "Previous", next: "Next", pagination: "Result pages", noResultsTitle: "Nothing found", noResultsBody: "Try a different word or remove a filter.", readMore: "Read lesson",
++    searchTitle: "Search", searchPrompt: "Type what you are looking for.", searchAll: "Search all languages", searchThisLang: "Search this language only",
++    share: "Share", shareVia: "Share via", categoriesLabel: "Subjects", tagsLabel: "Tags", translatedBy: "Translator", translationReviewed: "This translation has been reviewed",
++    translationUnreviewed: "This translation has not been reviewed yet", originalLanguage: "Original language", media: "Audio and video", audioLabel: "Audio", videoLabel: "Video",
++  },
++  types: { article: "Written", audio: "Audio", video: "Video", book_commentary: "Book commentary" },
++  quoteKinds: { quran: "Qur'anic text", hadith: "Hadith", translation: "Translation", commentary: "Commentary", scholar_quote: "Scholar's words", author_note: "Author's note", editorial_note: "Editorial note" },
++  citations: {
++    verified: "Reference checked against the source", unverified: "This reference has not been verified yet", grade: "Hadith grading", gradedBy: "according to", volume: "Volume", page: "Page", chapter: "Chapter",
++    hadithNumber: "Hadith number", locator: "Edition locator", edition: "Edition", quotation: "Quotation", notes: "Editorial notes",
++    grades: { unverified: "Unverified", not_applicable: "Not applicable", sahih: "Sahih", hasan: "Hasan", daif: "Weak (Da'if)", mawdu: "Fabricated (Mawdu')" },
++  },
+ };
+ 
+ const ar: Dictionary = {
+@@ -66,6 +111,21 @@ const ar: Dictionary = {
+   home: { latest: "أحدث الدروس", categories: "الأقسام", viewAll: "عرض الكل", noContentTitle: "لم يُنشر أي درس بعد", noContentBody: "ستظهر الدروس المنشورة هنا." },
+   lesson: { published: "تاريخ النشر", updated: "آخر تحديث", sources: "المصادر", related: "دروس ذات صلة", availableIn: "يتوفر هذا الدرس أيضًا بـ", print: "طباعة" },
+   notFound: { title: "الصفحة غير موجودة", body: "الصفحة المطلوبة غير موجودة أو تمت إزالتها.", back: "العودة إلى الرئيسية" },
++  lessons: {
++    title: "الدروس", breadcrumbHome: "الرئيسية", filters: "تصفية الدروس", category: "القسم", allCategories: "جميع الأقسام", type: "النوع", allTypes: "جميع الأنواع",
++    sort: "الترتيب", newest: "الأحدث أولًا", oldest: "الأقدم أولًا", apply: "تطبيق", clear: "مسح التصفية", results: "نتيجة", page: "صفحة", of: "من",
++    prev: "السابق", next: "التالي", pagination: "صفحات النتائج", noResultsTitle: "لا توجد نتائج", noResultsBody: "جرّب كلمة أخرى أو أزل إحدى التصفيات.", readMore: "قراءة الدرس",
++    searchTitle: "بحث", searchPrompt: "اكتب ما تبحث عنه.", searchAll: "البحث في جميع اللغات", searchThisLang: "البحث في هذه اللغة فقط",
++    share: "مشاركة", shareVia: "مشاركة عبر", categoriesLabel: "الأقسام", tagsLabel: "الوسوم", translatedBy: "المترجم", translationReviewed: "تمت مراجعة هذه الترجمة",
++    translationUnreviewed: "لم تتم مراجعة هذه الترجمة بعد", originalLanguage: "اللغة الأصلية", media: "الصوتيات والمرئيات", audioLabel: "صوت", videoLabel: "فيديو",
++  },
++  types: { article: "مقالة", audio: "صوتي", video: "مرئي", book_commentary: "شرح كتاب" },
++  quoteKinds: { quran: "نص قرآني", hadith: "حديث", translation: "ترجمة", commentary: "شرح", scholar_quote: "قول عالم", author_note: "ملاحظة المؤلف", editorial_note: "ملاحظة تحريرية" },
++  citations: {
++    verified: "تم التحقق من المرجع في المصدر", unverified: "لم يتم التحقق من هذا المرجع بعد", grade: "درجة الحديث", gradedBy: "وفق", volume: "المجلد", page: "الصفحة", chapter: "الباب",
++    hadithNumber: "رقم الحديث", locator: "الموضع في الطبعة", edition: "الطبعة", quotation: "النص المقتبس", notes: "ملاحظات تحريرية",
++    grades: { unverified: "غير موثّق", not_applicable: "لا ينطبق", sahih: "صحيح", hasan: "حسن", daif: "ضعيف", mawdu: "موضوع" },
++  },
+ };
+ 
+ const dictionaries: Record<Locale, Dictionary> = { ha, ar, en };
+diff --git a/src/lib/security/embed.ts b/src/lib/security/embed.ts
+index a6b000f..6330266 100644
+--- a/src/lib/security/embed.ts
++++ b/src/lib/security/embed.ts
+@@ -42,3 +42,10 @@ export function parseVideoUrl(raw: string): ParsedEmbed | null {
+ function yt(id: string): ParsedEmbed {
+   return { provider: "youtube", id, embedUrl: `https://www.youtube-nocookie.com/embed/${id}` };
+ }
++
++/** Builds an embed URL from a stored provider + id, re-validating the id (never trusts the stored value blindly). */
++export function embedUrlFor(provider: string, id: string): string | null {
++  if (provider === "youtube" && YT_ID.test(id)) return `https://www.youtube-nocookie.com/embed/${id}`;
++  if (provider === "vimeo" && VIMEO_ID.test(id)) return `https://player.vimeo.com/video/${id}?dnt=1`;
++  return null;
++}
+diff --git a/src/lib/seo/urls.ts b/src/lib/seo/urls.ts
+new file mode 100644
+index 0000000..344ce49
+--- /dev/null
++++ b/src/lib/seo/urls.ts
+@@ -0,0 +1,39 @@
++import { localePath, type Locale } from "@/lib/i18n/config";
++
++export function lessonPath(locale: Locale, slug: string): string {
++  return localePath(locale, `/lessons/${slug}`);
++}
++
++export function absoluteUrl(siteUrl: string, path: string): string {
++  return `${siteUrl.replace(/\/+$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
++}
++
++export interface Alt {
++  locale: Locale;
++  slug: string;
++}
++
++/**
++ * hreflang map for a lesson: ONLY translations that actually exist and are public.
++ * x-default points at the original-language version when it is published, else is omitted
++ * (we never guess a default).
++ */
++export function lessonLanguages(alts: Alt[], originalLocale: Locale): Record<string, string> {
++  const out: Record<string, string> = {};
++  for (const a of alts) out[a.locale] = lessonPath(a.locale, a.slug);
++  const orig = alts.find((a) => a.locale === originalLocale);
++  if (orig) out["x-default"] = lessonPath(orig.locale, orig.slug);
++  return out;
++}
++
++export function shareLinks(url: string, title: string) {
++  const u = encodeURIComponent(url);
++  const t = encodeURIComponent(title);
++  return [
++    { id: "whatsapp", label: "WhatsApp", href: `https://wa.me/?text=${t}%20${u}` },
++    { id: "telegram", label: "Telegram", href: `https://t.me/share/url?url=${u}&text=${t}` },
++    { id: "facebook", label: "Facebook", href: `https://www.facebook.com/sharer/sharer.php?u=${u}` },
++    { id: "x", label: "X", href: `https://twitter.com/intent/tweet?url=${u}&text=${t}` },
++    { id: "email", label: "Email", href: `mailto:?subject=${t}&body=${u}` },
++  ];
++}
+diff --git a/tests/integration/public-data.test.ts b/tests/integration/public-data.test.ts
+index f0b2a85..6197084 100644
+--- a/tests/integration/public-data.test.ts
++++ b/tests/integration/public-data.test.ts
+@@ -13,7 +13,7 @@ describe("public data through PostgREST and PostgreSQL RLS", () => {
+ 
+   it("lists only published translations visible to the anonymous role", async () => {
+     const rows = await getLessons("ha");
+-    expect(rows.map((row) => row.slug)).toEqual(["gwajin-ilimi"]);
++    expect(rows.map((row) => row.slug)).toEqual(["gwajin-ilimi", "niyya-a-ayyuka"]); // newest first; draft and scheduled excluded
+   });
+ 
+   it("loads the public lesson body and denies the draft slug", async () => {
+@@ -30,6 +30,7 @@ describe("public data through PostgREST and PostgreSQL RLS", () => {
+ 
+   it("returns cited sources, while sitemap URLs contain no drafts", async () => {
+     expect(await getLessonSources("10000000-0000-0000-0000-000000000001")).toMatchObject([{ title: "Littafin gwaji", page: "12" }]);
+-    expect(await getPublicLessonUrls()).toEqual([expect.objectContaining({ locale: "ha", slug: "gwajin-ilimi" })]);
++    const urls = (await getPublicLessonUrls()).map((u) => `${u.locale}/${u.slug}`).sort();
++    expect(urls).toEqual(["en/knowledge-test", "ha/gwajin-ilimi", "ha/niyya-a-ayyuka"]); // no drafts, no scheduled
+   });
+ });
+diff --git a/tests/integration/public-pages.test.ts b/tests/integration/public-pages.test.ts
+new file mode 100644
+index 0000000..82319af
+--- /dev/null
++++ b/tests/integration/public-pages.test.ts
+@@ -0,0 +1,124 @@
++import { describe, expect, it } from "vitest";
++import { getCategoryOptions, getCitations, getLessonDetail, getLessonList, getLessonMedia, getLessonTaxonomy, getRedirectTarget, getRelatedLessons } from "@/lib/data/lessons";
++import { getLessonTranslations } from "@/lib/data/public";
++import { parseListParams } from "@/lib/content/list-params";
++import { createPublicClient } from "@/lib/supabase/public";
++
++const L1 = "10000000-0000-0000-0000-000000000001";
++const L3 = "10000000-0000-0000-0000-000000000003";
++const params = (o: Record<string, string> = {}) => parseListParams(o);
++
++describe("lesson detail: originals, translations and visibility", () => {
++  it("returns original vs translation metadata", async () => {
++    const ha = await getLessonDetail("ha", "gwajin-ilimi");
++    expect(ha).toMatchObject({ kind: "original", original_locale: "ha", content_type: "article", author_name: "Marubuci na gwaji" });
++    const en = await getLessonDetail("en", "knowledge-test");
++    expect(en).toMatchObject({ kind: "translation", translator_name: "Fixture Translator", review_status: "reviewed" });
++  });
++  it("hides a DRAFT translation of a published lesson, and its alternate link", async () => {
++    expect(await getLessonDetail("en", "intentions-draft")).toBeNull();
++    expect((await getLessonTranslations(L3)).map((t) => t.locale)).toEqual(["ha"]);
++    expect((await getLessonTranslations(L1)).map((t) => t.locale).sort()).toEqual(["en", "ha"]);
++  });
++  it("hides a SCHEDULED (future) lesson", async () => {
++    expect(await getLessonDetail("ha", "nan-gaba")).toBeNull();
++  });
++  it("never returns the same slug under another locale", async () => {
++    expect(await getLessonDetail("ar", "gwajin-ilimi")).toBeNull();
++  });
++});
++
++describe("redirects", () => {
++  it("resolves a recorded old path", async () => {
++    expect(await getRedirectTarget("/ha/lessons/tsohon-suna")).toBe("/ha/lessons/gwajin-ilimi");
++  });
++  it("returns null for unknown paths", async () => {
++    expect(await getRedirectTarget("/ha/lessons/babu")).toBeNull();
++  });
++});
++
++describe("taxonomy, citations, related", () => {
++  it("localizes categories and tags, and omits missing translations", async () => {
++    expect(await getLessonTaxonomy(L1, "ha")).toEqual({ categories: [{ name: "Fanni na gwaji", slug: "fanni-na-gwaji" }], tags: [{ name: "Imani" }] });
++    expect(await getLessonTaxonomy(L1, "en")).toEqual({ categories: [{ name: "Test subject", slug: "test-subject" }], tags: [] });
++  });
++  it("returns grading with its authority and verification state exactly as stored", async () => {
++    const [c] = await getCitations(L3);
++    expect(c).toMatchObject({ title: "Fixture Hadith Collection", authenticity_grade: "sahih", graded_by: "Fixture authority", reference_verified: true, quotation: "Fixture quotation", hadith_number: "1" });
++    const [u] = await getCitations(L1);
++    expect(u).toMatchObject({ authenticity_grade: "unverified", reference_verified: false });
++  });
++  it("lists curated related lessons in the same locale only", async () => {
++    expect((await getRelatedLessons(L1, "ha")).map((l) => l.slug)).toEqual(["niyya-a-ayyuka"]);
++    expect(await getRelatedLessons(L1, "en")).toEqual([]);
++  });
++});
++
++describe("media", () => {
++  it("exposes only public media and builds a safe storage URL", async () => {
++    const media = await getLessonMedia(L1, "ha");
++    expect(media).toHaveLength(1); // the private file is invisible to the anonymous role
++    expect(media[0]?.url).toMatch(/\/storage\/v1\/object\/public\/media-public\/lessons\/pub%20file\.mp3$/);
++    expect(JSON.stringify(media)).not.toContain("secret");
++    expect(JSON.stringify(media)).not.toContain("private/");
++  });
++  it("builds a validated nocookie embed URL for video", async () => {
++    const [v] = await getLessonMedia(L3, "ha");
++    expect(v).toMatchObject({ kind: "video", embedUrl: "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ", title: "Bidiyon gwaji" });
++  });
++});
++
++describe("listing and search", () => {
++  it("lists newest first, supports oldest first, and counts", async () => {
++    const newest = await getLessonList("ha", params(), null);
++    expect(newest.items.map((i) => i.slug)).toEqual(["gwajin-ilimi", "niyya-a-ayyuka"]);
++    expect(newest.total).toBe(2);
++    expect((await getLessonList("ha", params({ sort: "old" }), null)).items.map((i) => i.slug)).toEqual(["niyya-a-ayyuka", "gwajin-ilimi"]);
++  });
++  it("filters by category and content type", async () => {
++    const cat = (await getCategoryOptions("ha")).find((c) => c.slug === "fanni-na-gwaji");
++    expect(cat).toBeTruthy();
++    expect((await getLessonList("ha", params({ category: "fanni-na-gwaji" }), cat!.id)).total).toBe(2);
++    expect((await getLessonList("ha", params({ type: "audio" }), null)).total).toBe(0);
++  });
++  it("a page past the end is not an error and still reports the real total (so the page can clamp)", async () => {
++    const r = await getLessonList("ha", params({ page: "500" }), null);
++    expect(r.items).toEqual([]);
++    expect(r.total).toBe(2);
++  });
++  it("finds Arabic text with or without diacritics", async () => {
++    expect((await getLessonList("ha", params({ q: "الاعمال بالنيات" }), null)).items.map((i) => i.slug)).toEqual(["niyya-a-ayyuka"]);
++    expect((await getLessonList("ha", params({ q: "إِنَّمَا الْأَعْمَالُ" }), null)).items.map((i) => i.slug)).toEqual(["niyya-a-ayyuka"]);
++  });
++  it("keeps drafts, scheduled items and private text out of results", async () => {
++    for (const q of ["unfinished", "Intentions", "nan gaba", "Rubutu na nan gaba", "private message", "secret"]) {
++      expect((await getLessonList("ha", params({ q, all: "1" }), null)).items, q).toEqual([]);
++    }
++  });
++  it("scopes to the locale unless all languages is requested", async () => {
++    expect((await getLessonList("ha", params({ q: "knowledge" }), null)).items).toEqual([]);
++    const all = await getLessonList("ha", params({ q: "knowledge", all: "1" }), null);
++    expect(all.items.map((i) => `${i.locale}/${i.slug}`)).toEqual(["en/knowledge-test"]);
++  });
++  it("treats SQL/LIKE metacharacters as plain text", async () => {
++    for (const q of ["100%", "_", "'; drop table lessons; --", "a\\b"]) expect((await getLessonList("ha", params({ q }), null)).items, q).toEqual([]);
++  });
++});
++
++describe("row level security through the public key", () => {
++  it("denies private tables to the anonymous role", async () => {
++    const db = createPublicClient();
++    for (const table of ["contact_messages", "audit_logs", "lesson_revisions", "profiles", "rate_limits"]) {
++      const { data, error } = await db.from(table).select("*").limit(1);
++      expect(error, table).toBeTruthy();
++      expect(data, table).toBeNull();
++    }
++  });
++  it("cannot write anything", async () => {
++    const db = createPublicClient();
++    expect((await db.from("lessons").insert({ content_type: "article" })).error).toBeTruthy();
++    expect((await db.from("contact_messages").insert({ name: "x", email: "x@y.co", message: "hello there" })).error).toBeTruthy();
++    const upd = await db.from("lesson_translations").update({ title: "hacked" }).eq("slug", "gwajin-ilimi").select();
++    expect(upd.data ?? []).toEqual([]);
++  });
++});
+diff --git a/tests/unit/list-params.test.ts b/tests/unit/list-params.test.ts
+new file mode 100644
+index 0000000..6dbd3cc
+--- /dev/null
++++ b/tests/unit/list-params.test.ts
+@@ -0,0 +1,61 @@
++import { describe, expect, it } from "vitest";
++import { buildListHref, hasActiveFilters, parseListParams } from "@/lib/content/list-params";
++import { formatDate, safeJsonLd } from "@/lib/format";
++import { lessonLanguages, shareLinks } from "@/lib/seo/urls";
++import { embedUrlFor } from "@/lib/security/embed";
++
++describe("parseListParams", () => {
++  it("applies safe defaults", () => expect(parseListParams({})).toEqual({ q: "", category: null, type: null, sort: "new", page: 1, all: false }));
++  it("clamps page", () => {
++    expect(parseListParams({ page: "-5" }).page).toBe(1);
++    expect(parseListParams({ page: "abc" }).page).toBe(1);
++    expect(parseListParams({ page: "999999" }).page).toBe(500);
++    expect(parseListParams({ page: "3" }).page).toBe(3);
++  });
++  it("rejects unknown types and malformed category slugs", () => {
++    expect(parseListParams({ type: "malware" }).type).toBeNull();
++    expect(parseListParams({ type: "audio" }).type).toBe("audio");
++    expect(parseListParams({ category: "../../etc" }).category).toBeNull();
++    expect(parseListParams({ category: "hadith" }).category).toBe("hadith");
++  });
++  it("sanitises and truncates q (control chars, whitespace, length)", () => {
++    expect(parseListParams({ q: "  a\u0000b\n\tc  " }).q).toBe("a b c");
++    expect(parseListParams({ q: "x".repeat(500) }).q.length).toBe(200);
++  });
++  it("keeps Arabic with diacritics intact", () => expect(parseListParams({ q: "الْأَعْمَالُ" }).q).toBe("الْأَعْمَالُ"));
++  it("takes the first value of repeated params", () => expect(parseListParams({ page: ["2", "9"] }).page).toBe(2));
++});
++
++describe("buildListHref", () => {
++  it("omits defaults", () => expect(buildListHref("/ha/lessons", { page: 1, sort: "new" })).toBe("/ha/lessons"));
++  it("encodes values", () => expect(buildListHref("/ha/lessons", { q: "a&b=c", page: 2 })).toBe("/ha/lessons?q=a%26b%3Dc&page=2"));
++  it("reports active filters", () => {
++    expect(hasActiveFilters(parseListParams({}))).toBe(false);
++    expect(hasActiveFilters(parseListParams({ sort: "old" }))).toBe(true);
++  });
++});
++
++describe("lessonLanguages (hreflang)", () => {
++  it("lists only existing translations and uses the original as x-default", () => {
++    const r = lessonLanguages([{ locale: "ha", slug: "a" }, { locale: "en", slug: "b" }], "ha");
++    expect(r).toEqual({ ha: "/ha/lessons/a", en: "/en/lessons/b", "x-default": "/ha/lessons/a" });
++    expect("ar" in r).toBe(false);
++  });
++  it("omits x-default when the original is not published", () => {
++    expect(lessonLanguages([{ locale: "en", slug: "b" }], "ha")["x-default"]).toBeUndefined();
++  });
++});
++
++describe("misc helpers", () => {
++  it("safeJsonLd cannot close a script tag", () => expect(safeJsonLd({ a: "</script><script>alert(1)" })).not.toContain("</script"));
++  it("formatDate is stable and tolerates bad input", () => {
++    expect(formatDate("2026-05-01T23:59:00Z", "en")).toContain("2026");
++    expect(formatDate("nonsense", "en")).toBe("");
++  });
++  it("share links encode the URL", () => expect(shareLinks("https://x.test/a?b=1&c=2", "T & U")[0]?.href).toContain("https%3A%2F%2Fx.test%2Fa%3Fb%3D1%26c%3D2"));
++  it("embedUrlFor re-validates ids", () => {
++    expect(embedUrlFor("youtube", "dQw4w9WgXcQ")).toBe("https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ");
++    expect(embedUrlFor("youtube", '"><script>')).toBeNull();
++    expect(embedUrlFor("evil", "123456789")).toBeNull();
++  });
++});
+diff --git a/tests/unit/render-document.test.tsx b/tests/unit/render-document.test.tsx
+new file mode 100644
+index 0000000..19894d7
+--- /dev/null
++++ b/tests/unit/render-document.test.tsx
+@@ -0,0 +1,123 @@
++import { describe, expect, it } from "vitest";
++import { renderToStaticMarkup } from "react-dom/server";
++import { collectMediaIds, renderDocument } from "@/lib/content/render-document";
++import { Citations } from "@/components/lessons/Citations";
++import { getDictionary } from "@/lib/i18n/dictionaries";
++import type { Citation, PublicMedia } from "@/lib/data/lessons";
++
++const html = (doc: unknown, ctx = {}) => renderToStaticMarkup(<>{renderDocument(doc, ctx)}</>);
++const p = (text: string, attrs?: object) => ({ type: "paragraph", ...(attrs ? { attrs } : {}), content: [{ type: "text", text }] });
++const doc = (...content: object[]) => ({ type: "doc", content });
++const ha = getDictionary("ha");
++
++describe("renderDocument: direction and language", () => {
++  it("defaults to dir=auto so Arabic inside Hausa text flips by itself", () => {
++    expect(html(doc(p("Sannu")))).toContain('<p dir="auto"');
++  });
++  it("keeps explicit rtl + lang", () => {
++    const out = html(doc(p("إِنَّمَا الْأَعْمَالُ بِالنِّيَّاتِ", { dir: "rtl", lang: "ar" })));
++    expect(out).toContain('lang="ar"');
++    expect(out).toContain('dir="rtl"');
++    expect(out).toContain("إِنَّمَا الْأَعْمَالُ بِالنِّيَّاتِ"); // diacritics preserved byte for byte
++  });
++});
++
++describe("renderDocument: religious text blocks", () => {
++  const hadith = { type: "blockquote", attrs: { kind: "hadith", dir: "rtl", lang: "ar" }, content: [p("نص")] };
++  it("labels the block kind in the reader's language", () => {
++    const out = html(doc(hadith), { dict: ha });
++    expect(out).toContain('data-kind="hadith"');
++    expect(out).toContain(ha.quoteKinds.hadith);
++    expect(html(doc(hadith), { dict: getDictionary("ar") })).toContain("حديث");
++  });
++  it("renders without a label when no dictionary is given (never invents one)", () => {
++    expect(html(doc(hadith))).not.toContain("Hadisi");
++  });
++});
++
++describe("renderDocument: security", () => {
++  it("escapes raw HTML typed as text", () => {
++    const out = html(doc(p('<img src=x onerror=alert(1)><script>alert(2)</script>')));
++    expect(out).not.toContain("<img");
++    expect(out).not.toContain("<script");
++    expect(out).toContain("&lt;img");
++  });
++  it("refuses the WHOLE document if it contains an unsafe link", () => {
++    const bad = doc({ type: "paragraph", content: [{ type: "text", text: "x", marks: [{ type: "link", attrs: { href: "javascript:alert(1)" } }] }] });
++    expect(html(bad)).toBe("");
++  });
++  it("refuses unknown node types", () => {
++    expect(html(doc({ type: "iframe", attrs: { src: "https://evil.example" } }))).toBe("");
++  });
++  it("marks external links noopener/noreferrer/nofollow", () => {
++    const d = doc({ type: "paragraph", content: [{ type: "text", text: "x", marks: [{ type: "link", attrs: { href: "https://example.com" } }] }] });
++    expect(html(d)).toMatch(/rel="nofollow noopener noreferrer"/);
++  });
++  it("renders formatting marks", () => {
++    const d = doc({ type: "paragraph", content: [{ type: "text", text: "b", marks: [{ type: "bold" }, { type: "italic" }] }] });
++    expect(html(d)).toContain("<strong>");
++    expect(html(d)).toContain("<em>");
++  });
++});
++
++describe("renderDocument: tables and media", () => {
++  it("renders accessible table headers inside a scroll container", () => {
++    const d = doc({ type: "table", content: [{ type: "tableRow", content: [{ type: "tableHeader", content: [p("H")] }] }, { type: "tableRow", content: [{ type: "tableCell", content: [p("C")] }] }] });
++    const out = html(d);
++    expect(out).toContain('scope="col"');
++    expect(out).toContain("overflow-x-auto");
++  });
++  const id = "3b241101-e2bb-4255-8caf-4136c566a962";
++  const ref = doc({ type: "mediaRef", attrs: { mediaId: id } });
++  const img: PublicMedia = { id, kind: "image", url: "https://x.supabase.co/storage/v1/object/public/media-public/a.png", embedUrl: null, mime_type: "image/png", width: 800, height: 600, duration_seconds: null, title: null, alt_text: "Alt text", caption: "Caption" };
++  it("renders nothing for an unresolved/private media reference", () => {
++    expect(html(ref)).toBe("");
++    expect(html(ref, { media: {} })).toBe("");
++  });
++  it("renders a resolved image with alt text, size and lazy loading", () => {
++    const out = html(ref, { media: { [id]: img } });
++    expect(out).toContain('alt="Alt text"');
++    expect(out).toContain('loading="lazy"');
++    expect(out).toContain("<figcaption");
++  });
++  it("audio never preloads", () => {
++    const out = html(ref, { media: { [id]: { ...img, kind: "audio", mime_type: "audio/mpeg" } } });
++    expect(out).toContain('preload="none"');
++  });
++  it("collects media ids from nested content, ignoring invalid documents", () => {
++    expect(collectMediaIds(doc({ type: "blockquote", content: [ref.content[0] as object] }))).toEqual([id]);
++    expect(collectMediaIds({ nonsense: true })).toEqual([]);
++  });
++});
++
++describe("Citations", () => {
++  const base: Citation = {
++    id: "1", title: "Source", author_or_compiler: null, edition: null, publisher: null, publication_year: null, source_url: null, volume: null, page: "12",
++    chapter: null, hadith_number: null, edition_locator: null, quotation: null, authenticity_grade: "unverified", graded_by: null, reference_verified: false, editorial_notes: null,
++  };
++  const out = (c: Partial<Citation>) => renderToStaticMarkup(<Citations citations={[{ ...base, ...c }]} dict={getDictionary("en")} />);
++  it("labels an unverified reference as unverified and shows no grade", () => {
++    const o = out({});
++    expect(o).toContain("has not been verified yet");
++    expect(o).not.toContain("Hadith grading");
++  });
++  it("shows a grade only together with its authority, plus the verified marker", () => {
++    const o = out({ authenticity_grade: "sahih", graded_by: "Named Authority", reference_verified: true });
++    expect(o).toContain("Hadith grading");
++    expect(o).toContain("Sahih");
++    expect(o).toContain("Named Authority");
++    expect(o).toContain("Reference checked against the source");
++  });
++  it("does not show 'not applicable' as a grade", () => {
++    expect(out({ authenticity_grade: "not_applicable" })).not.toContain("Hadith grading");
++  });
++  it("renders locators and escapes hostile text", () => {
++    const o = out({ title: "<b>x</b>", page: "12", hadith_number: "7" });
++    expect(o).toContain("Page: 12");
++    expect(o).toContain("Hadith number: 7");
++    expect(o).not.toContain("<b>x</b>");
++  });
++  it("renders nothing when there are no citations", () => {
++    expect(renderToStaticMarkup(<Citations citations={[]} dict={getDictionary("en")} />)).toBe("");
++  });
++});
+-- 
+2.43.0
+
+
+From f86526439bc98117582f8599f3af1c09a4a8b387 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 19 Oct 2026 07:17:41 +0000
+Subject: [PATCH 3/3] docs+tests: progress report, README, HTTP regression
+ script, extended fixtures
+
+---
+ README.md                        |   2 +-
+ docs/PROGRESS.md                 |  68 +++++++++++---------
+ package.json                     |   1 +
+ tests/integration/http-checks.sh | 107 +++++++++++++++++++++++++++++++
+ 4 files changed, 147 insertions(+), 31 deletions(-)
+ create mode 100755 tests/integration/http-checks.sh
+
+diff --git a/README.md b/README.md
+index 87fc54b..bca4fa9 100644
+--- a/README.md
++++ b/README.md
+@@ -12,4 +12,4 @@ npm run dev                     # http://localhost:3000  (redirects to /ha)
+ Provision the first admin: [docs/ADMIN_PROVISIONING.md](docs/ADMIN_PROVISIONING.md).
+ 
+ ## Checks
+-`npm run typecheck && npm run lint && npm test`. `npm run test:stack` starts an isolated PostgreSQL + PostgREST stack with Docker Compose and runs public data integration tests through the app's Supabase client under the real anonymous database role and RLS policies. `npm run test:db` remains available for the SQL-only suite (needs a local PostgreSQL 15+ with `PG*` env vars set).
++`npm run typecheck && npm run lint && npm test`. `npm run test:stack` starts an isolated PostgreSQL + PostgREST stack with Docker Compose and runs public data integration tests through the app's Supabase client under the real anonymous database role and RLS policies. `npm run test:http` runs ~70 HTTP checks against a running production build connected to that stack (see the header of `tests/integration/http-checks.sh`). `npm run test:db` remains available for the SQL-only suite (needs a local PostgreSQL 15+ with `PG*` env vars set).
+diff --git a/docs/PROGRESS.md b/docs/PROGRESS.md
+index 59da1d5..4947cb5 100644
+--- a/docs/PROGRESS.md
++++ b/docs/PROGRESS.md
+@@ -2,41 +2,49 @@
+ 
+ Legend: DONE = implemented and verified as stated | PARTIAL | TODO
+ 
+-## Verified so far (see "How verified")
++## Status
+ | Area | Status | Notes |
+ |---|---|---|
+-| Project scaffold (Next 16.4, React 19, TS 5.9 strict, Tailwind 4, ESLint 9, Vitest, Playwright installed) | DONE | TypeScript 7 and ESLint 10 deliberately NOT used (ecosystem compatibility) |
+-| Env validation (zod), `.env.example` | DONE | |
+-| Supabase clients: browser, server (cookie), public (anon, cacheable), service (server-only) | DONE | |
+-| DB schema (25 tables), migrations 0001-0007 | DONE | applied to PostgreSQL 16; 0007 also verified as an upgrade on existing data |
+-| RLS on every table + least-privilege grants | DONE | 77 SQL assertions pass |
+-| Triggers: status transitions, publish-rights, slug-change 301 redirects, revisions, audit log, role-escalation guard | DONE | |
+-| Multilingual search (Hausa/Arabic/English folding) `search_lessons()` | DONE (DB) | no UI yet |
+-| Storage buckets/policies (private + public) | WRITTEN, UNTESTED | needs a real Supabase project (no `storage` schema in test DB) |
+-| i18n routing `/ha /ar /en`, RTL/LTR, hreflang + x-default, localized 404 | DONE | verified via HTTP on production build |
+-| Fonts self-hosted; Hausa hooked letters + Arabic diacritics glyph coverage verified | DONE | Noto Serif + Amiri |
+-| Admin auth: login action, server-side `requireStaff/requireAdmin`, proxy gate, logout, dashboard | PARTIAL | code builds and anonymous gate verified over HTTP; **login against a real Supabase Auth NOT yet exercised** |
+-| Rich-text document validator, embed allowlist, safe redirect, slug, publishing rules | DONE | adversarial unit tests |
+-| Home page (live DB queries, ISR 5 min) | PARTIAL | Real Postgres + PostgREST test stack and public-query integration suite added; stack execution remains unverified on this machine because Docker is unavailable |
+-| Public lessons list and detail, search | DONE | Locale aware pages use the anonymous Supabase client; lesson document JSON is rendered as React nodes |
+-| Sitemap and robots | DONE | Sitemap includes localized homes, lesson indexes and published translations only; robots blocks admin and search |
++| Scaffold (Next 16.4, React 19, TS 5.9 strict, Tailwind 4, ESLint 9, Vitest, Playwright installed) | DONE | TypeScript 7 / ESLint 10 deliberately not used (ecosystem compatibility) |
++| Env validation, Supabase clients (browser / server / anon-public / service) | DONE | |
++| DB schema + RLS + triggers, migrations 0001-0007 | DONE | 77 SQL assertions; 0007 verified as an upgrade on existing data |
++| Multilingual search `search_lessons()` (Hausa/Arabic/English folding) | DONE | verified through PostgREST, incl. Arabic without diacritics |
++| i18n routing `/ha /ar /en`, RTL/LTR, localized 404, hreflang + x-default | DONE | verified over HTTP |
++| Admin auth (login action, server-side guards, proxy gate, dashboard) | PARTIAL | anonymous gate verified; **login against real Supabase Auth NOT exercised** |
++| Rich-text validator, embed allowlist, safe redirect, slug, publishing rules | DONE | adversarial unit tests |
++| **Lessons list**: search box, category + type filters, sort, pagination with total, empty/loading states | DONE | URL-driven; filtered pages `noindex`; out-of-range page shows last page (`noindex`) |
++| **Lesson page**: citations (grading + authority + verified), RTL Arabic blocks, translation notice, categories/tags, audio/video, related, share, print, breadcrumbs | DONE | verified over HTTP on a production build |
++| **Search page** (current language / all languages) | DONE | |
++| **Slug-change redirects** (permanent redirect from the old URL) | DONE | DB trigger records them; page serves them |
++| **SEO on lesson page**: canonical, OpenGraph, Article + BreadcrumbList JSON-LD, hreflang only for public translations | DONE | no invented publisher/ratings |
++| **Sitemap** (reciprocal alternates, published only) + robots | DONE | excludes drafts and scheduled items |
++| Home page | DONE | |
++| Storage buckets/policies | WRITTEN, UNTESTED | needs a real Supabase project |
++| Audio / video / books / about / contact / category pages | TODO | `audio`, `videos`, `books`, `about`, `contact`, `categories/*` still 404 |
++| Lesson editor, admin CRUD, media upload, revisions UI | TODO | Phase 3 |
++| Playwright E2E, accessibility audit, Lighthouse | TODO | |
+ 
+-## How verified
+-- `npm run typecheck`, `npm run lint`, `npm test` (68 unit tests), `npm run test:db` (77 assertions, needs local Postgres 15+), `next build`.
+-- HTTP checks against `next start`: redirects, lang/dir, canonical, hreflang, 404 status, admin gate, security headers.
+-- NOT verified: real Supabase (Auth, Storage), Postgres + PostgREST integration run (Docker unavailable on this machine), browsers (Playwright not yet run), accessibility audits, Lighthouse.
++## How verified (and what was NOT)
++- `npm run typecheck`, `npm run lint`, `npm test` (**102 unit tests**), `npm run test:db` (**77 SQL assertions**, local PostgreSQL 15+).
++- **Stack integration (24 tests)**: the app's real Supabase client against PostgreSQL + PostgREST under the real `anon` role and RLS
++  (`npm run test:stack` with Docker; during development it was executed with native PostgreSQL 16 + PostgREST 13.0.4 + nginx 1.24).
++- **HTTP checks (69)** against `next build && next start` connected to that stack: `bash tests/integration/http-checks.sh`.
++- NOT verified: real Supabase (Auth, Storage, hosted PostgREST), the Docker Compose file itself (Docker was unavailable; it pins
++  PostgREST 12.2.12 while development used 13.0.4), browsers/Playwright, accessibility audits, Lighthouse, load.
+ 
+-## Remaining (planned order)
+-1. **Phase 3 - Publishing system**: lesson editor (Tiptap), autosave with `version` check, translations UI, categories/tags/sources/media admin, preview, publish/archive, revision restore, media upload + public release.
+-2. **Phase 4 - Public site**: categories, audio, video, books, about, richer lesson media/player support, contact (Turnstile + rate limit).
+-3. **Phase 5 - SEO**: JSON-LD, redirects lookup in proxy/not-found, OG images.
+-4. **Phase 6 - Tests/docs**: Playwright E2E, a11y checks, deployment/backup docs, final report.
++## Findings fixed during review (kept here so they are not reintroduced)
++1. `npm run test:stack` could not work: `vitest.config.mts` only includes `tests/unit`, and the Supabase client calls `/rest/v1/*`, which a bare PostgREST does not serve. Added `vitest.integration.config.mts` and an nginx gateway to the compose stack.
++2. **Soft 404s**: a `loading.tsx` at `lessons/` wrapped the lesson page in Suspense, so `notFound()`/`permanentRedirect()` ran after streaming started and returned HTTP 200. `loading.tsx` now lives in the `(index)` route group and covers only the listing.
++3. `notFound()` from a page rendered a bare error shell because the root layout called `notFound()` itself. The layout now falls back to the default locale.
++4. Past-the-end pages: PostgREST answers HTTP 416 (and some versions send a truncated error body). Detected by status code, never by body.
++5. Citations previously printed the raw grade code (e.g. `unverified`) in English for every language; now localized, attributed to the named authority, and explicitly labelled verified/unverified.
+ 
+ ## Known issues / decisions
+ - CSP uses `'unsafe-inline'` for scripts (Next bootstrap); move to nonces before launch.
+ - Hausa and Arabic interface strings are drafts and need native-speaker review.
+-- Publication status lives on translations only (no lesson-level status) to avoid contradictory values.
+-- No generated Supabase types yet; `src/types/db.ts` is hand-written.
+-- MFA enforcement, login rate-limiting beyond Supabase's built-in limits: TODO.
+-- `/` and other unprefixed paths use a 307 redirect (locale chosen by cookie/Accept-Language).
+-- Remaining home page links such as audio and video routes still need their public pages.
++- Publication status lives on translations only (no lesson-level status).
++- No generated Supabase types; `src/types/db.ts` and `src/lib/data/*.ts` row types are hand-written (`supabase gen types` once a project is linked).
++- MFA enforcement and login rate limiting beyond Supabase's built-in limits: TODO.
++- `/` and unprefixed paths use a 307 locale redirect.
++- Out-of-range list pages return 200 + `noindex` (not a redirect) because that route streams behind `loading.tsx`.
++- Lesson pages are ISR (5 min). A scheduled lesson appears within that window of its publish time.
+diff --git a/package.json b/package.json
+index 9aefb3f..11708d2 100644
+--- a/package.json
++++ b/package.json
+@@ -19,6 +19,7 @@
+     "test:e2e": "playwright test",
+     "test:db": "bash tests/integration/run.sh",
+     "test:stack": "node tests/integration/run-stack.mjs",
++    "test:http": "bash tests/integration/http-checks.sh",
+     "check": "npm run typecheck && npm run lint && npm run test"
+   },
+   "dependencies": {
+diff --git a/tests/integration/http-checks.sh b/tests/integration/http-checks.sh
+new file mode 100755
+index 0000000..20c7bb8
+--- /dev/null
++++ b/tests/integration/http-checks.sh
+@@ -0,0 +1,107 @@
++#!/usr/bin/env bash
++# HTTP smoke/regression checks against a RUNNING production build of the app that is connected to the integration stack
++# (tests/integration/stack: seeded fixtures). Not wired into `npm test` because it needs the stack + `next build && next start`.
++#   1) start the stack and export NEXT_PUBLIC_* as in tests/integration/run-stack.mjs
++#   2) npm run build && npm start -- -p 3111
++#   3) APP_URL=http://localhost:3111 bash tests/integration/http-checks.sh
++# Exit code is non-zero if any check fails.
++B="${APP_URL:-http://localhost:3111}"; PASS=0; FAIL=0
++t(){ # name, condition-exit
++  if [ "$2" = "0" ]; then PASS=$((PASS+1)); echo "PASS  $1"; else FAIL=$((FAIL+1)); echo "FAIL  $1"; fi; }
++get(){ curl -s -o /tmp/p.html -D /tmp/h.txt -w "%{http_code}" "$B$1"; }
++has(){ grep -aqF -- "$1" /tmp/p.html; }
++hasnt(){ ! grep -aqF -- "$1" /tmp/p.html; }
++code(){ [ "$(get "$1")" = "$2" ]; }
++
++echo "=== lesson: Hausa original with English translation, taxonomy, citation, media, related"
++code /ha/lessons/gwajin-ilimi 200; t "200 /ha/lessons/gwajin-ilimi" $?
++has '<title>Gwajin ilimi | Mimbarul Ilm'; t "title" $?
++has 'hrefLang="en" href="http://localhost:3000/en/lessons/knowledge-test"'; t "hreflang en (exists, published)" $?
++has 'hrefLang="x-default" href="http://localhost:3000/ha/lessons/gwajin-ilimi"'; t "x-default = original language" $?
++has 'rel="canonical" href="http://localhost:3000/ha/lessons/gwajin-ilimi"'; t "canonical" $?
++has 'property="og:type" content="article"'; t "OpenGraph article" $?
++has 'Marubuci na gwaji'; t "author shown" $?
++has 'category=fanni-na-gwaji'; t "category link" $?
++has 'Imani'; t "tag shown" $?
++has 'Ba a tabbatar da wannan madogara ba tukuna'; t "unverified citation labelled (Hausa)" $?
++has 'Littafin gwaji'; t "citation title" $?
++has 'media-public/lessons/pub%20file.mp3'; t "public audio URL, encoded" $?
++has 'preload="none"'; t "audio not preloaded" $?
++hasnt 'secret.mp3'; t "private audio NOT exposed" $?
++hasnt 'private/pub.mp3'; t "private storage path NOT exposed" $?
++has 'Niyya a ayyuka'; t "related lesson listed" $?
++has 'lang="en"'; t "language switcher offers English" $?
++python3 - <<'PY'
++import re,json
++h=open('/tmp/p.html',encoding='utf8').read()
++blocks=re.findall(r'<script type="application/ld\+json">(.*?)</script>',h,re.S)
++types=[json.loads(b)['@type'] for b in blocks]
++assert types==['Article','BreadcrumbList'],types
++a=json.loads(blocks[0]); assert a['inLanguage']=='ha' and a['author']['name']=='Marubuci na gwaji' and 'publisher' not in a
++print("jsonld ok")
++PY
++t "JSON-LD valid: Article + BreadcrumbList, no invented publisher" $?
++grep -qi "content-security-policy" /tmp/h.txt; t "CSP header present" $?
++
++echo "=== translation page"
++code /en/lessons/knowledge-test 200; t "200 /en/lessons/knowledge-test" $?
++has 'Fixture Translator'; t "translator attributed" $?
++has 'This translation has been reviewed'; t "review status shown" $?
++has 'Hausa'; t "original language shown" $?
++has 'hrefLang="ha" href="http://localhost:3000/ha/lessons/gwajin-ilimi"'; t "reciprocal hreflang to Hausa" $?
++has '<html lang="en" dir="ltr">'; t "html lang/dir en" $?
++
++echo "=== Arabic hadith block + draft translation + video"
++code /ha/lessons/niyya-a-ayyuka 200; t "200 /ha/lessons/niyya-a-ayyuka" $?
++has 'data-kind="hadith"'; t "hadith block typed" $?
++has 'dir="rtl"'; t "RTL on Arabic block" $?
++has 'إِنَّمَا الْأَعْمَالُ بِالنِّيَّاتِ'; t "Arabic text + diacritics intact" $?
++has '>Hadisi<'; t "block labelled in Hausa" $?
++hasnt 'hrefLang="en"'; t "NO hreflang for the draft English translation" $?
++hasnt 'intentions-draft'; t "draft slug never leaked" $?
++has 'youtube-nocookie.com/embed/dQw4w9WgXcQ'; t "video via nocookie embed" $?
++has 'sandbox="allow-scripts allow-same-origin allow-presentation"'; t "iframe sandboxed" $?
++has 'Fixture authority'; t "grading attributed to named authority" $?
++has 'An tabbatar da madogarar'; t "verified marker (Hausa)" $?
++
++echo "=== visibility, redirects"
++code /en/lessons/intentions-draft 404; t "draft translation -> 404" $?
++code /ha/lessons/nan-gaba 404; t "scheduled lesson -> 404" $?
++code /ha/lessons/sirrin-daftari 404; t "draft lesson -> 404" $?
++code /ha/lessons/tsohon-suna 308; t "renamed slug -> permanent redirect" $?
++grep -qi "^location: /ha/lessons/gwajin-ilimi" /tmp/h.txt; t "redirect target correct" $?
++code /ha/lessons/babu-wannan 404; t "unknown slug -> 404" $?
++has 'Ba a sami shafin ba'; t "localized 404 body" $?
++
++echo "=== listing, filters, pagination"
++code /ha/lessons 200; t "200 /ha/lessons" $?
++sed 's/<[^>]*>//g' /tmp/p.html | grep -aqE '2 +sakamako'; t "result count" $?
++has 'Gwajin ilimi'; t "lists lesson 1" $?
++code "/ha/lessons?category=fanni-na-gwaji" 200; has 'Niyya a ayyuka'; t "category filter" $?
++has 'name="robots" content="noindex'; t "filtered page is noindex" $?
++code "/ha/lessons?category=babu" 200; has 'Ba a sami komai ba'; t "unknown category -> empty state" $?
++code "/ha/lessons?type=bogus&page=-3" 200; t "garbage params tolerated" $?
++code "/ha/lessons?page=500" 200; t "past-the-end page is not an error" $?
++has 'Gwajin ilimi'; t "past-the-end page shows the last real page" $?
++has 'name="robots" content="noindex'; t "past-the-end page is noindex" $?
++code "/ha/lessons?sort=old" 200; python3 -c "
++h=open('/tmp/p.html',encoding='utf8').read(); assert h.index('Niyya a ayyuka')<h.index('Gwajin ilimi')"; t "oldest-first order" $?
++code /ar/lessons 200; has '<html lang="ar" dir="rtl">'; t "Arabic listing is RTL" $?
++
++echo "=== search"
++code "/ha/search?q=%D8%A7%D9%84%D8%A7%D8%B9%D9%85%D8%A7%D9%84%20%D8%A8%D8%A7%D9%84%D9%86%D9%8A%D8%A7%D8%AA" 200; has 'Niyya a ayyuka'; t "Arabic query without diacritics finds the lesson" $?
++has 'name="robots" content="noindex'; t "search results are noindex" $?
++code "/ha/search?q=knowledge" 200; hasnt 'Knowledge test'; t "search scoped to current language" $?
++code "/ha/search?q=knowledge&all=1" 200; has 'Knowledge test'; t "all-languages search" $?
++code "/ha/search?q=unfinished&all=1" 200; hasnt 'Intentions'; t "draft text not searchable" $?
++code "/ha/search?q=%3Cscript%3Ealert(1)%3C/script%3E" 200; hasnt '<script>alert(1)'; t "reflected query escaped" $?
++code "/ha/search" 200; has 'Rubuta kalmar da kake nema'; t "empty query prompt" $?
++
++echo "=== sitemap / robots"
++curl -s $B/sitemap.xml > /tmp/p.html
++has 'knowledge-test'; t "sitemap: published English translation" $?
++has 'xhtml:link rel="alternate" hreflang="en"'; t "sitemap: reciprocal alternates" $?
++for s in nan-gaba intentions-draft sirrin-daftari; do hasnt "$s"; t "sitemap excludes $s" $?; done
++curl -s $B/robots.txt > /tmp/p.html; has 'Disallow: /admin/'; t "robots blocks admin" $?; has 'sitemap.xml'; t "robots lists sitemap" $?
++echo; echo "RESULT: $PASS passed, $FAIL failed"
++[ "$FAIL" = "0" ]
+-- 
+2.43.0
+

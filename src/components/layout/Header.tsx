@@ -1,8 +1,8 @@
 import Link from "next/link";
+import Image from "next/image";
 import { localePath, type Locale } from "@/lib/i18n/config";
 import type { Dictionary } from "@/lib/i18n/dictionaries";
 import { LanguageSwitcher, type Alternate } from "./LanguageSwitcher";
-import { MinbarMark } from "./MinbarMark";
 import { MobileNav, type NavItem } from "./MobileNav";
 
 export function Header({ locale, dict, alternates }: { locale: Locale; dict: Dictionary; alternates: Alternate[] }) {
@@ -18,7 +18,7 @@ export function Header({ locale, dict, alternates }: { locale: Locale; dict: Dic
     <header className="relative bg-deep text-ivory">
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
         <Link href={localePath(locale)} className="flex items-center gap-3" aria-label={`${dict.siteName} - ${dict.nav.home}`}>
-          <MinbarMark className="h-7 w-8 text-gold-bright" />
+          <Image src="/mimbarul-ilm-logo.png" alt={dict.siteName} width={120} height={120} className="h-12 w-12 rounded-full object-cover" priority />
           <span className="text-xl font-semibold tracking-tight">{dict.siteName}</span>
         </Link>
         <nav aria-label="Main" className="ui hidden items-center gap-1 md:flex">
