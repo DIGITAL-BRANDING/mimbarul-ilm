@@ -11,7 +11,7 @@ export default async function AdminLessonEditorPage({ params, searchParams }: { 
   const { supabase } = await requireStaff();
   const { data, error } = await supabase
     .from("lesson_translations")
-    .select("id, lesson_id, locale, title, slug, excerpt, body_text, status, version, lessons!inner(content_type)")
+    .select("id, lesson_id, locale, title, slug, excerpt, body_text, status, published_at, version, lessons!inner(content_type)")
     .eq("id", id)
     .maybeSingle();
   if (error || !data) notFound();
@@ -23,6 +23,7 @@ export default async function AdminLessonEditorPage({ params, searchParams }: { 
     excerpt: string | null;
     body_text: string;
     status: string;
+    published_at: string | null;
     version: number;
     lessons: { content_type: string } | Array<{ content_type: string }>;
   };
@@ -38,6 +39,11 @@ export default async function AdminLessonEditorPage({ params, searchParams }: { 
         </div>
         <span className="text-xs text-mute">Version {row.version}</span>
       </div>
+      {row.status === "published" && row.published_at && (
+        <p className="mt-3 text-sm text-moss">
+          Published. <Link className="underline" href={`/${row.locale}/lessons/${row.slug}`} target="_blank">Open public page →</Link>
+        </p>
+      )}
       {saved === "1" && <p role="status" className="mt-4 rounded border border-moss/30 bg-moss/5 px-3 py-2 text-sm text-moss">Lesson saved.</p>}
       {created === "1" && <p role="status" className="mt-4 rounded border border-moss/30 bg-moss/5 px-3 py-2 text-sm text-moss">Lesson created. Review it before publishing.</p>}
       <LessonEditorForm lesson={{ ...row, bodyText: row.body_text, contentType: lesson?.content_type ?? "article" }} />
