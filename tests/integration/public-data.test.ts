@@ -13,7 +13,7 @@ describe("public data through PostgREST and PostgreSQL RLS", () => {
 
   it("lists only published translations visible to the anonymous role", async () => {
     const rows = await getLessons("ha");
-    expect(rows.map((row) => row.slug)).toEqual(["gwajin-ilimi"]);
+    expect(rows.map((row) => row.slug)).toEqual(["gwajin-ilimi", "niyya-a-ayyuka"]); // newest first; draft and scheduled excluded
   });
 
   it("loads the public lesson body and denies the draft slug", async () => {
@@ -30,6 +30,7 @@ describe("public data through PostgREST and PostgreSQL RLS", () => {
 
   it("returns cited sources, while sitemap URLs contain no drafts", async () => {
     expect(await getLessonSources("10000000-0000-0000-0000-000000000001")).toMatchObject([{ title: "Littafin gwaji", page: "12" }]);
-    expect(await getPublicLessonUrls()).toEqual([expect.objectContaining({ locale: "ha", slug: "gwajin-ilimi" })]);
+    const urls = (await getPublicLessonUrls()).map((u) => `${u.locale}/${u.slug}`).sort();
+    expect(urls).toEqual(["en/knowledge-test", "ha/gwajin-ilimi", "ha/niyya-a-ayyuka"]); // no drafts, no scheduled
   });
 });

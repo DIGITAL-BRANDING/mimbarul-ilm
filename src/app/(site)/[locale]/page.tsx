@@ -4,9 +4,9 @@ import { notFound } from "next/navigation";
 import { MinbarMark } from "@/components/layout/MinbarMark";
 import { SiteShell } from "@/components/layout/SiteShell";
 import { getLatestLessons, getPrimaryAuthor, getTopCategories } from "@/lib/data/public";
-import { isLocale, LOCALES, LOCALE_META, localePath, type Locale } from "@/lib/i18n/config";
+import { isLocale, LOCALES, LOCALE_META, localePath } from "@/lib/i18n/config";
 import { getDictionary } from "@/lib/i18n/dictionaries";
-import type { LessonListItem } from "@/types/db";
+import { LessonList } from "@/components/lessons/LessonList";
 
 // Scheduled lessons become visible without a deploy: re-generate at most every 5 minutes.
 export const revalidate = 300;
@@ -26,28 +26,6 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
     },
     openGraph: { type: "website", siteName: dict.siteName, title: dict.siteName, description: dict.motto, locale: LOCALE_META[locale].ogLocale },
   };
-}
-
-function formatDate(iso: string, locale: Locale) {
-  return new Intl.DateTimeFormat(locale === "ar" ? "ar" : locale === "ha" ? "ha-NG" : "en", { dateStyle: "long", timeZone: "UTC" }).format(new Date(iso));
-}
-
-function LessonList({ items, locale }: { items: LessonListItem[]; locale: Locale }) {
-  return (
-    <ul className="divide-y divide-rule border-y border-rule">
-      {items.map((l) => (
-        <li key={l.id}>
-          <Link href={localePath(locale, `/lessons/${l.slug}`)} className="group block py-5">
-            <h3 className="text-xl font-semibold text-deep group-hover:underline">{l.title}</h3>
-            {l.excerpt && <p className="mt-1 max-w-prose text-mute">{l.excerpt}</p>}
-            <p className="ui mt-2 text-xs text-mute">
-              <time dateTime={l.published_at}>{formatDate(l.published_at, locale)}</time>
-            </p>
-          </Link>
-        </li>
-      ))}
-    </ul>
-  );
 }
 
 export default async function HomePage({ params }: { params: Promise<{ locale: string }> }) {
@@ -110,7 +88,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
           </div>
           <div className="mt-5">
             {latest.length > 0 ? (
-              <LessonList items={latest} locale={locale} />
+              <LessonList items={latest} locale={locale} dict={dict} headingLevel={3} />
             ) : (
               <div className="rounded border border-dashed border-rule bg-parchment/50 p-8">
                 <p className="font-semibold text-deep">{dict.home.noContentTitle}</p>
@@ -148,7 +126,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
               </Link>
             </div>
             <div className="mt-5">
-              <LessonList items={audio} locale={locale} />
+              <LessonList items={audio} locale={locale} dict={dict} headingLevel={3} />
             </div>
           </section>
         )}
@@ -164,7 +142,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
               </Link>
             </div>
             <div className="mt-5">
-              <LessonList items={video} locale={locale} />
+              <LessonList items={video} locale={locale} dict={dict} headingLevel={3} />
             </div>
           </section>
         )}

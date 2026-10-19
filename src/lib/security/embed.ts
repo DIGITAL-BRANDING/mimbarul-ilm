@@ -42,3 +42,10 @@ export function parseVideoUrl(raw: string): ParsedEmbed | null {
 function yt(id: string): ParsedEmbed {
   return { provider: "youtube", id, embedUrl: `https://www.youtube-nocookie.com/embed/${id}` };
 }
+
+/** Builds an embed URL from a stored provider + id, re-validating the id (never trusts the stored value blindly). */
+export function embedUrlFor(provider: string, id: string): string | null {
+  if (provider === "youtube" && YT_ID.test(id)) return `https://www.youtube-nocookie.com/embed/${id}`;
+  if (provider === "vimeo" && VIMEO_ID.test(id)) return `https://player.vimeo.com/video/${id}?dnt=1`;
+  return null;
+}

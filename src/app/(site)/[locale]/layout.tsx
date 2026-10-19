@@ -1,12 +1,11 @@
 import type { Metadata } from "next";
-import { notFound } from "next/navigation";
 import "@fontsource-variable/noto-serif/wght.css";
 import "@fontsource-variable/noto-serif/wght-italic.css";
 import "@fontsource/amiri/arabic-400.css";
 import "@fontsource/amiri/arabic-700.css";
 import "../../globals.css";
 import { getDictionary } from "@/lib/i18n/dictionaries";
-import { getDir, isLocale, LOCALES } from "@/lib/i18n/config";
+import { DEFAULT_LOCALE, getDir, isLocale, LOCALES } from "@/lib/i18n/config";
 import { getPublicEnv } from "@/lib/env";
 
 export function generateStaticParams() {
@@ -27,8 +26,10 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
 
 export default async function LocaleLayout({ children, params }: { children: React.ReactNode; params: Promise<{ locale: string }> }) {
   const { locale: raw } = await params;
-  if (!isLocale(raw)) notFound();
-  const locale = raw;
+  // Do NOT call notFound() here. While Next renders a not-found page it may render this layout without route params; a
+  // second notFound() would then replace the localized 404 with a bare error shell. Invalid locales never reach this
+  // layout anyway: dynamicParams=false rejects them and src/proxy.ts redirects unknown prefixes.
+  const locale = isLocale(raw) ? raw : DEFAULT_LOCALE;
   const dict = getDictionary(locale);
 
   return (
