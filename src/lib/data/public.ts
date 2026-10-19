@@ -31,6 +31,30 @@ export interface LessonSource {
   reference_verified: boolean;
 }
 
+export interface PublicAuthorProfile {
+  display_name: string;
+  headline: string | null;
+  biography: unknown;
+  education: unknown;
+  teaching_activities: unknown;
+  seo_description: string | null;
+  email_public: string | null;
+  social_links: unknown;
+}
+
+export interface PublicBook {
+  id: string;
+  book_id: string;
+  locale: Locale;
+  title: string;
+  slug: string;
+  description: string | null;
+  publisher: string | null;
+  publication_year: number | null;
+  purchase_url: string | null;
+  is_featured: boolean;
+}
+
 /**
  * Public-page data access.
  *
@@ -93,6 +117,54 @@ export async function getPrimaryAuthor(locale: Locale): Promise<AuthorSummary | 
     return null;
   }
   return data ? { display_name: data.display_name as string, headline: (data.headline as string | null) ?? null } : null;
+}
+
+export async function getPublicAuthor(locale: Locale): Promise<PublicAuthorProfile | null> {
+  const supabase = createPublicClient();
+  const { data, error } = await supabase
+    .from("author_profile_translations")
+    .select("display_name, headline, biography, education, teaching_activities, seo_description, author_profiles!inner(is_primary, email_public, social_links)")
+    .eq("locale", locale)
+    .eq("author_profiles.is_primary", true)
+    .maybeSingle();
+  if (error) {
+    failSoft("getPublicAuthor", error.message);
+    return null;
+  }
+  if (!data) return null;
+  const row = data as unknown as {
+    display_name: string;
+    headline: string | null;
+    biography: unknown;
+    education: unknown;
+    teaching_activities: unknown;
+    seo_description: string | null;
+    author_profiles: { email_public: string | null; social_links: unknown };
+  };
+  return { ...row, ...row.author_profiles };
+}
+
+export async function getPublishedBooks(locale: Locale, limit = 50): Promise<PublicBook[]> {
+  const supabase = createPublicClient();
+  const { data, error } = await supabase
+    .from("book_translations")
+    .select("id, book_id, locale, title, slug, description, publisher, books!inner(publication_year, purchase_url, is_featured)")
+    .eq("locale", locale)
+    .eq("status", "published")
+    .lte("published_at", new Date().toISOString())
+    .order("is_featured", { referencedTable: "books", ascending: false })
+    .order("publication_year", { referencedTable: "books", ascending: false, nullsFirst: false })
+    .limit(limit);
+  if (error) {
+    failSoft("getPublishedBooks", error.message);
+    return [];
+  }
+  return ((data ?? []) as unknown as Array<PublicBook & { books: { publication_year: number | null; purchase_url: string | null; is_featured: boolean } }>).map(({ books, ...book }) => ({
+    ...book,
+    publication_year: books.publication_year,
+    purchase_url: books.purchase_url,
+    is_featured: books.is_featured,
+  }));
 }
 
 export async function getLessons(

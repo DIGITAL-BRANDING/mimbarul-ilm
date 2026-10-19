@@ -7,6 +7,9 @@ export function Footer({ locale, dict }: { locale: Locale; dict: Dictionary }) {
   const links = [
     { href: localePath(locale, "/about"), label: dict.nav.about },
     { href: localePath(locale, "/lessons"), label: dict.nav.lessons },
+    { href: localePath(locale, "/audio"), label: dict.nav.audio },
+    { href: localePath(locale, "/videos"), label: dict.nav.videos },
+    { href: localePath(locale, "/books"), label: dict.nav.books },
     { href: localePath(locale, "/search"), label: dict.nav.search },
     { href: localePath(locale, "/contact"), label: dict.nav.contact },
   ];

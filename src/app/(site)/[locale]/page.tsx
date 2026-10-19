@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import Image from "next/image";
 import { notFound } from "next/navigation";
-import { MinbarMark } from "@/components/layout/MinbarMark";
 import { SiteShell } from "@/components/layout/SiteShell";
 import { getLatestLessons, getPrimaryAuthor, getTopCategories } from "@/lib/data/public";
 import { isLocale, LOCALES, LOCALE_META, localePath } from "@/lib/i18n/config";
@@ -44,8 +44,10 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
 
   return (
     <SiteShell locale={locale} path="">
-      <section className="bg-deep text-ivory">
-        <div className="mx-auto grid max-w-6xl items-center gap-10 px-4 py-14 sm:px-6 md:grid-cols-[1.1fr_1fr] md:py-20">
+      <section className="relative isolate overflow-hidden bg-deep text-ivory">
+        <Image src="/mimbarul-ilm-library-hero.png" alt="" fill priority sizes="100vw" className="-z-20 object-cover object-center" />
+        <div className="absolute inset-0 -z-10 bg-deep/80" aria-hidden="true" />
+        <div className="mx-auto grid max-w-6xl items-center gap-10 px-4 py-20 sm:px-6 md:grid-cols-[1.1fr_1fr] md:py-28">
           <div>
             {/* Real author identity only: shown when the administrator has entered it. */}
             {author && <p className="ui text-sm text-gold-bright">{author.display_name}</p>}
@@ -67,10 +69,13 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
               </button>
             </form>
           </div>
-          <div className="relative hidden select-none md:block" aria-hidden="true">
-            <MinbarMark className="absolute -end-4 bottom-0 h-56 w-64 text-moss/60" />
-            <p lang="ar" dir="rtl" className="relative text-center font-arabic text-7xl leading-[1.5] text-gold-bright lg:text-8xl">
-              منبر العلم
+          <div className="relative hidden select-none md:self-start md:block md:pt-2" aria-hidden="true">
+            <p
+              lang="ar"
+              dir="rtl"
+              className="text-center font-arabic text-4xl font-semibold leading-relaxed text-gold-bright drop-shadow-sm lg:text-5xl"
+            >
+              منبر العلم الإسلامي
             </p>
           </div>
         </div>
